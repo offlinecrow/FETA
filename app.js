@@ -428,13 +428,20 @@ function chooseSheet() {
     <button class="btn ghost" data-act="sync-choose" data-id="local">Use this device’s data and replace the account’s</button>`);
 }
 
+// A password box with a Show/Hide button, so people can check what they typed.
+function passwordField(label, autocomplete, autofocus) {
+  return `<label class="field"><span>${label}</span>
+    <span class="pass-wrap"><input type="password" name="password" autocomplete="${autocomplete}" autocapitalize="none" spellcheck="false" ${autofocus ? 'data-autofocus' : ''}>
+      <button type="button" class="pass-toggle" data-act="toggle-pass" aria-pressed="false" aria-label="Show password">Show</button></span></label>`;
+}
+
 function accountSheet(mode) {
   const up = mode === 'signup';
   openSheet(up ? 'Create an account' : 'Sign in', `
     <form data-form="auth" novalidate>
       <input type="hidden" name="mode" value="${up ? 'signup' : 'signin'}">
       <label class="field"><span>Email</span><input type="text" inputmode="email" name="email" autocomplete="email" autocapitalize="none" spellcheck="false" data-autofocus></label>
-      <label class="field"><span>Password${up ? ' (at least 6 characters)' : ''}</span><input type="password" name="password" autocomplete="${up ? 'new-password' : 'current-password'}"></label>
+      ${passwordField(`Password${up ? ' (at least 6 characters)' : ''}`, up ? 'new-password' : 'current-password')}
       ${up ? '<p class="note">Your data is saved to your account so it is backed up and the same on every device you sign in on.</p>' : ''}
       <button class="btn">${up ? 'Create account' : 'Sign in'}</button>
       <button type="button" class="btn ghost" data-act="open-account" data-id="${up ? 'signin' : 'signup'}">${up ? 'I already have an account' : 'Create a new account'}</button>
@@ -445,7 +452,7 @@ function accountSheet(mode) {
 function newPasswordSheet() {
   openSheet('Set a new password', `
     <form data-form="newpass" novalidate>
-      <label class="field"><span>New password (at least 6 characters)</span><input type="password" name="password" autocomplete="new-password" data-autofocus></label>
+      ${passwordField('New password (at least 6 characters)', 'new-password', true)}
       <button class="btn">Save password</button>
     </form>`);
 }
@@ -1473,6 +1480,15 @@ const remove = (key, id) => { state[key] = state[key].filter((x) => x.id !== id)
 const actions = {
   'tab': (el) => { ui.tab = el.dataset.id; ui.bar = null; render(); window.scrollTo(0, 0); },
   'start': () => { startApp(); save(); render(); },
+  'toggle-pass': (el) => {
+    const input = el.parentElement.querySelector('input');
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    el.textContent = show ? 'Hide' : 'Show';
+    el.setAttribute('aria-pressed', String(show));
+    el.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+    input.focus();
+  },
   'open-account': (el) => accountSheet(el.dataset.id === 'signin' ? 'signin' : 'signup'),
   'forgot': async () => {
     const email = ($('#sheet-root [name="email"]').value || '').trim().toLowerCase();
