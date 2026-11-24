@@ -344,3 +344,49 @@ div.row:active { background: none; }
 #toast { bottom: calc(env(safe-area-inset-bottom) + 156px); }
 #app { padding-bottom: calc(env(safe-area-inset-bottom) + 170px); }
 @media (prefers-reduced-motion: reduce) { .tab { transition: none; } }
+
+/* ---------- Liquid glass tab bar: clearer glass, sliding capsule, sliding pages ---------- */
+:root { --glass: rgba(255, 255, 255, .34); --glass-edge: rgba(255, 255, 255, .7); --glass-shine: rgba(255, 255, 255, .9); --glass-pill: rgba(255, 255, 255, .62); --glass-pill-edge: rgba(255, 255, 255, .95); --glass-shadow: 0 12px 36px rgba(11, 11, 11, .18), 0 2px 8px rgba(11, 11, 11, .08); --glass-sheen: rgba(255, 255, 255, .5); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --glass: rgba(60, 60, 58, .32); --glass-edge: rgba(255, 255, 255, .16); --glass-shine: rgba(255, 255, 255, .28); --glass-pill: rgba(255, 255, 255, .16); --glass-pill-edge: rgba(255, 255, 255, .3); --glass-shadow: 0 12px 36px rgba(0, 0, 0, .6), 0 2px 8px rgba(0, 0, 0, .35); --glass-sheen: rgba(255, 255, 255, .1); }
+}
+:root[data-theme="dark"] { --glass: rgba(60, 60, 58, .32); --glass-edge: rgba(255, 255, 255, .16); --glass-shine: rgba(255, 255, 255, .28); --glass-pill: rgba(255, 255, 255, .16); --glass-pill-edge: rgba(255, 255, 255, .3); --glass-shadow: 0 12px 36px rgba(0, 0, 0, .6), 0 2px 8px rgba(0, 0, 0, .35); --glass-sheen: rgba(255, 255, 255, .1); }
+
+.tabbar-in {
+  position: relative; isolation: isolate;
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(22px) saturate(190%) brightness(1.04); backdrop-filter: blur(22px) saturate(190%) brightness(1.04);
+  border: 1px solid var(--glass-edge);
+  box-shadow: var(--glass-shadow), inset 0 1px 1px var(--glass-shine), inset 0 -1px 1px rgba(0, 0, 0, .05);
+}
+/* A soft band of light across the top half, like the curve of real glass. */
+.tabbar-in::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 0;
+  background: linear-gradient(180deg, var(--glass-sheen), transparent 55%);
+}
+/* The capsule under the selected tab. It slides to the new tab instead of jumping. */
+.tab-pill {
+  position: absolute; z-index: 0; top: 5px; bottom: 5px; left: 5px;
+  width: calc((100% - 10px - (var(--n) - 1) * 1px) / var(--n));
+  transform: translateX(calc(var(--i) * (100% + 1px)));
+  transition: transform .45s cubic-bezier(.32, 1.28, .5, 1);
+  border-radius: 999px;
+  background: var(--glass-pill);
+  box-shadow: inset 0 1px 1px var(--glass-pill-edge), inset 0 0 0 1px var(--glass-edge), 0 2px 10px rgba(0, 0, 0, .1);
+  -webkit-backdrop-filter: blur(6px) saturate(160%); backdrop-filter: blur(6px) saturate(160%);
+  will-change: transform;
+}
+.tab { position: relative; z-index: 1; background: none; }
+.tab.on, .tab:active { background: none; box-shadow: none; }
+.tab.on { color: var(--accent); }
+
+/* The page slides in from the side of the tab you tapped. */
+#app { overflow-x: clip; }
+.view.from-right { animation: view-from-right .32s cubic-bezier(.2, .8, .2, 1) both; }
+.view.from-left { animation: view-from-left .32s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes view-from-right { from { transform: translateX(36px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes view-from-left { from { transform: translateX(-36px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .tab-pill { transition: none; }
+  .view.from-right, .view.from-left { animation: none; }
+}

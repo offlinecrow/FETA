@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '17';
+const APP_VERSION = '18';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -677,14 +677,24 @@ function render() {
   const views = { home: viewHome, bills: viewBills, savings: viewSavings, reports: viewReports, planner: viewPlanner, more: viewMore };
   const tabs = [['home', 'Home'], ['bills', 'Bills'], ['savings', 'Savings'], ['reports', 'Reports'], ['planner', 'Planner'], ['more', 'More']];
   const overdue = dueItems(curYM()).filter((it) => dueStatus(it) === 'unpaid').length;
+  // When the tab changes, the glass capsule slides from the old tab to the new one and the page slides in from that side.
+  const index = tabs.findIndex(([id]) => id === ui.tab);
+  const from = lastTabIndex == null ? index : lastTabIndex;
+  const slide = index > from ? 'from-right' : index < from ? 'from-left' : '';
+  lastTabIndex = index;
   app.innerHTML = `
-    ${views[ui.tab]()}
+    <div class="view ${slide}">${views[ui.tab]()}</div>
     ${fabHtml()}
-    <nav class="tabbar"><div class="tabbar-in">
+    <nav class="tabbar"><div class="tabbar-in" style="--n:${tabs.length}">
+      <i class="tab-pill" style="--i:${from}" aria-hidden="true"></i>
       ${tabs.map(([id, label]) => `<button class="tab ${ui.tab === id ? 'on' : ''}" data-act="tab" data-id="${id}" ${ui.tab === id ? 'aria-current="page"' : ''}>
         ${ICONS[id]}${id === 'bills' && overdue ? `<i class="badge" aria-label="${overdue} unpaid">${overdue}</i>` : ''}<span>${label}</span></button>`).join('')}
     </div></nav>`;
+  if (from !== index) {
+    requestAnimationFrame(() => requestAnimationFrame(() => { const pill = $('.tab-pill'); if (pill) pill.style.setProperty('--i', index); }));
+  }
 }
+let lastTabIndex = null;
 
 function currencyOptions(selected) {
   const list = CURRENCIES.includes(selected) ? CURRENCIES : [selected, ...CURRENCIES];
