@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '14';
+const APP_VERSION = '15';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -211,7 +211,7 @@ function save() {
 
 let state = load();
 const ui = {
-  tab: 'home', month: curYM(), filter: 'all', search: '', bar: null, bills: 'month', horizon: 12,
+  tab: 'home', home: 'month', month: curYM(), filter: 'all', search: '', bar: null, bills: 'month', horizon: 12,
   rep: { period: 'month', cursor: today(), measure: 'expense' },
   planner: 'plans'
 };
@@ -774,7 +774,50 @@ function homeListHtml() {
   return txGroups(list, q || ui.filter !== 'all' ? 'Nothing matches.' : 'Nothing recorded for this month yet. Tap + to add income, an expense or savings.');
 }
 
+const homeSwitch = () => segButtons('home-mode', [['month', 'Month report'], ['year', 'Year report']], ui.home);
+
+// The whole year at a glance: totals, then one line per month. Tapping a month opens it.
+function viewHomeYear() {
+  const year = ui.month.slice(0, 4);
+  const list = state.transactions.filter((t) => t.date.startsWith(year));
+  const t = totalsOf(list);
+  const rows = Array.from({ length: 12 }, (_, i) => `${year}-${pad(i + 1)}`).map((ym) => ({ ym, t: totalsOf(list.filter((x) => x.date.startsWith(ym))) }));
+  const active = rows.filter((r) => r.t.income || r.t.expense || r.t.saving);
+  const rate = t.income > 0 ? Math.round((t.saving / t.income) * 100) : 0;
+  return `<header class="top">
+      ${homeSwitch()}
+      <div class="month-nav">
+        <button class="nav-btn" data-act="home-year" data-d="-1" aria-label="Previous year">‹</button>
+        <div class="month-title">${year}</div>
+        <button class="nav-btn" data-act="home-year" data-d="1" aria-label="Next year">›</button>
+      </div>
+      ${year === curYM().slice(0, 4) ? '' : '<button class="link center" data-act="month-now">Back to this year</button>'}
+    </header>
+    ${androidUpdateCard()}
+    <section class="card">
+      <div class="label">Left this year</div>
+      <div class="hero-num ${t.balance < 0 ? 'neg' : ''}">${fmt(t.balance)}</div>
+      <div class="sub">Income minus expenses and savings${active.length ? ` · about ${fmt(Math.round(t.expense / active.length))} spent a month` : ''}</div>
+      <div class="kpis three" style="margin-top:14px">
+        <div class="kpi"><div class="label">Income</div><div class="v">${fmt(t.income)}</div></div>
+        <div class="kpi"><div class="label">Expenses</div><div class="v">${fmt(t.expense)}</div></div>
+        <div class="kpi"><div class="label">Savings</div><div class="v">${fmt(t.saving)}</div>${rate ? `<div class="s">${rate}% of income</div>` : ''}</div>
+      </div>
+    </section>
+    <section class="card">
+      <div class="sec-head" style="margin-top:0"><h2>Month by month</h2></div>
+      ${active.length ? `<table class="tbl"><thead><tr><th>Month</th><th>In</th><th>Out</th><th>Saved</th><th>Left</th></tr></thead><tbody>
+        ${active.map((r) => `<tr data-act="home-month" data-id="${r.ym}"><td>${toDate(r.ym + '-01').toLocaleDateString(undefined, { month: 'short' })}</td>
+          <td>${fmtK(r.t.income)}</td><td>${fmtK(r.t.expense)}</td><td>${fmtK(r.t.saving)}</td><td class="${r.t.balance < 0 ? 'over' : ''}">${fmtK(r.t.balance)}</td></tr>`).join('')}
+        <tr class="tbl-total"><td>Total</td><td>${fmtK(t.income)}</td><td>${fmtK(t.expense)}</td><td>${fmtK(t.saving)}</td><td class="${t.balance < 0 ? 'over' : ''}">${fmtK(t.balance)}</td></tr>
+        </tbody></table><p class="note" style="margin:10px 0 0">Tap a month to open it.</p>`
+        : '<div class="empty">Nothing recorded in this year.</div>'}
+    </section>
+    <button class="btn ghost" data-act="year-report">Charts and categories for ${year}</button>`;
+}
+
 function viewHome() {
+  if (ui.home === 'year') return viewHomeYear();
   const ym = ui.month;
   const t = totalsOf(txInMonth(ym));
   const open = dueItems(ym).filter(isOpen);
@@ -799,6 +842,7 @@ function viewHome() {
   }
 
   return `<header class="top">
+      ${homeSwitch()}
       ${monthNav(ym, 'month')}
       ${isNow ? '' : '<button class="link center" data-act="month-now">Back to this month</button>'}
     </header>
@@ -1605,6 +1649,10 @@ const actions = {
   'confirm-yes': () => { const fn = pendingConfirm; closeSheet(); if (fn) fn(); },
   'month': (el) => { ui.month = addMonths(ui.month, Number(el.dataset.d)); render(); },
   'month-now': () => { ui.month = curYM(); render(); },
+  'home-mode': (el) => { ui.home = el.dataset.id === 'year' ? 'year' : 'month'; render(); window.scrollTo(0, 0); },
+  'home-year': (el) => { ui.month = `${Number(ui.month.slice(0, 4)) + Number(el.dataset.d)}${ui.month.slice(4)}`; render(); },
+  'home-month': (el) => { if (isYM(el.dataset.id)) { ui.month = el.dataset.id; ui.home = 'month'; render(); window.scrollTo(0, 0); } },
+  'year-report': () => { ui.tab = 'reports'; ui.rep.period = 'year'; ui.rep.cursor = `${ui.month.slice(0, 4)}-01-01`; ui.bar = null; render(); window.scrollTo(0, 0); },
   'open-bills': () => { ui.tab = 'bills'; ui.bills = 'month'; render(); window.scrollTo(0, 0); },
   'filter': (el) => { ui.filter = el.dataset.id; render(); },
   'open-owed': () => { ui.tab = 'planner'; ui.planner = debtTotal('receivable') ? 'receivable' : 'payable'; render(); window.scrollTo(0, 0); },
