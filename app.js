@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '13';
+const APP_VERSION = '14';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -846,7 +846,9 @@ function emiRow(e) {
     <span class="row-main">
       <span class="row-top"><span class="name">${esc(e.name)}</span><span class="amt">${fmt(e.monthly)}<span class="of"> a month</span></span></span>
       <span class="meter"><span style="width:${(st.paidCount / e.tenure) * 100}%"></span></span>
-      <span class="row-sub">${st.open.length ? `${st.paidCount} of ${e.tenure} paid · ${fmt(st.left)} left · ends ${ymShort(st.end)}` : `✓ All ${e.tenure} instalments paid`}</span>
+      <span class="row-sub">${!st.open.length ? `✓ All ${e.tenure} instalments paid`
+        : e.start > curYM() ? `Starts ${ymShort(e.start)} · ${plural(e.tenure, 'instalment')} · ends ${ymShort(st.end)}`
+        : `${st.paidCount} of ${e.tenure} paid · ${fmt(st.left)} left · ${ymShort(e.start)} to ${ymShort(st.end)}`}</span>
     </span></button>`;
 }
 
@@ -1159,6 +1161,21 @@ function viewMore() {
 const NOTE_LABEL = { expense: 'What was it for?', income: 'Where did it come from?', saving: 'Note (optional)' };
 const NOTE_HINT = { expense: 'House rent, school fee…', income: 'Client name, who gave it…', saving: '' };
 
+// A month chooser made of two plain lists (month and year), which works the same on every phone.
+function monthPicker(label, name, value, optional) {
+  const [y, m] = isYM(value) ? value.split('-').map(Number) : [Number(curYM().slice(0, 4)), 0];
+  const thisYear = Number(curYM().slice(0, 4));
+  const years = [];
+  for (let i = thisYear - 5; i <= thisYear + 15; i++) years.push(i);
+  if (!years.includes(y)) { years.push(y); years.sort((a, b) => a - b); }
+  return `<div class="field"><span>${label}</span><div class="two">
+    <select name="${name}M" aria-label="${label}: month">${optional ? `<option value="" ${m ? '' : 'selected'}>No date</option>` : ''}
+      ${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}" ${m === i + 1 ? 'selected' : ''}>${monthNameOf(i + 1)}</option>`).join('')}</select>
+    <select name="${name}Y" aria-label="${label}: year">${years.map((v) => `<option ${v === y ? 'selected' : ''}>${v}</option>`).join('')}</select>
+  </div></div>`;
+}
+const pickedMonth = (f, name) => (f[name + 'M'] && f[name + 'Y'] ? `${f[name + 'Y']}-${pad(Number(f[name + 'M']))}` : '');
+
 function typeRadios(current, types = TYPES) {
   return `<div class="seg" role="radiogroup" aria-label="Type" style="grid-template-columns:repeat(${types.length},1fr)">
     ${types.map((v) => `<label><input type="radio" name="type" value="${v}" ${v === current ? 'checked' : ''}><span>${TYPE_LABEL[v]}</span></label>`).join('')}</div>`;
@@ -1229,7 +1246,7 @@ function recSheet(r) {
       </div>
       <label class="field ${freq === 'yearly' ? '' : 'hidden'}" data-month-wrap><span>Month</span><select name="month">
         ${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}" ${(r ? r.month : Number(ui.month.slice(5, 7))) === i + 1 ? 'selected' : ''}>${monthNameOf(i + 1)}</option>`).join('')}</select></label>
-      <label class="field"><span>Starts from</span><input type="month" name="start" value="${r ? r.start : ui.month}"></label>
+      ${monthPicker('Starts from', 'start', r ? r.start : ui.month)}
       <p class="note">It appears in Bills on its date each time. You confirm the amount when you pay, so a fee that changes is no problem.</p>
       ${r ? `<label class="check"><input type="checkbox" name="paused" ${r.paused ? 'checked' : ''}><span>Paused</span></label>` : ''}
       <button class="btn">${r ? 'Save changes' : 'Add'}</button>
@@ -1255,10 +1272,8 @@ function emiSheet(e) {
         </div></div>
       <label class="field ${pick === 'other' ? '' : 'hidden'}" data-tenure-wrap><span>Number of months</span>
         <input type="text" inputmode="numeric" name="tenureOther" autocomplete="off" placeholder="For example 18" value="${pick === 'other' ? tenure : ''}"></label>
-      <div class="two">
-        <label class="field"><span>First instalment month</span><input type="month" name="start" value="${e ? e.start : curYM()}"></label>
-        <label class="field"><span>Instalments already paid</span><input type="text" inputmode="numeric" name="paidBefore" autocomplete="off" placeholder="0" value="${e && e.paidBefore ? e.paidBefore : ''}"></label>
-      </div>
+      ${monthPicker('Starting month (first instalment)', 'start', e ? e.start : curYM())}
+      <label class="field"><span>Instalments already paid, if it started earlier</span><input type="text" inputmode="numeric" name="paidBefore" autocomplete="off" placeholder="0" value="${e && e.paidBefore ? e.paidBefore : ''}"></label>
       <label class="field"><span>Expense category</span><select name="categoryId">${catOptions('expense', e ? e.categoryId : emiCat && emiCat.id)}</select></label>
       <p class="note" data-emi-summary></p>
       <button class="btn">${e ? 'Save changes' : 'Add EMI'}</button>
@@ -1277,9 +1292,9 @@ function syncEmiForm(form) {
   $('[data-tenure-wrap]', form).classList.toggle('hidden', form.elements.tenurePick.value !== 'other');
   const tenure = emiTenure(form);
   const monthly = parseAmount(form.elements.monthly.value);
-  const start = form.elements.start.value;
+  const start = pickedMonth({ startM: form.elements.startM.value, startY: form.elements.startY.value }, 'start');
   $('[data-emi-summary]', form).textContent = tenure && monthly > 0 && isYM(start)
-    ? `${tenure} instalments of ${fmt(monthly)} = ${fmt(monthly * tenure)} in total. It repeats in Bills every month until the last instalment in ${ymLabel(addMonths(start, tenure - 1))}.`
+    ? `${tenure} instalments of ${fmt(monthly)} = ${fmt(monthly * tenure)} in total. It appears in Bills every month from ${ymLabel(start)} and stops after the last instalment in ${ymLabel(addMonths(start, tenure - 1))}.`
     : 'It repeats in Bills every month until the last instalment.';
 }
 
@@ -1307,10 +1322,8 @@ function planSheet(p) {
     <form data-form="plan" novalidate>
       <input type="hidden" name="id" value="${p ? p.id : ''}">
       <label class="field"><span>What do you plan to buy or do?</span><input type="text" name="name" maxlength="60" autocomplete="off" placeholder="New phone, family trip…" value="${esc(p ? p.name : '')}" ${p ? '' : 'data-autofocus'}></label>
-      <div class="two">
-        <label class="field"><span>Expected cost</span><input type="text" inputmode="decimal" name="price" placeholder="0" autocomplete="off" value="${p ? p.price : ''}"></label>
-        <label class="field"><span>By when (optional)</span><input type="month" name="target" value="${p ? p.target : ''}"></label>
-      </div>
+      <label class="field"><span>Expected cost</span><input type="text" inputmode="decimal" name="price" placeholder="0" autocomplete="off" value="${p ? p.price : ''}"></label>
+      ${monthPicker('By when (optional)', 'target', p ? p.target : '', true)}
       <label class="field"><span>Priority</span><select name="priority">
         ${['high', 'medium', 'low'].map((v) => `<option value="${v}" ${(p ? p.priority : 'medium') === v ? 'selected' : ''}>${v[0].toUpperCase() + v.slice(1)}</option>`).join('')}</select></label>
       <label class="field"><span>Note (optional)</span><input type="text" name="note" maxlength="120" autocomplete="off" value="${esc(p ? p.note : '')}"></label>
@@ -1410,10 +1423,11 @@ function submitRec(f) {
   if (!(amount > 0)) return toast('Enter an amount above zero.');
   const day = dayOf(f.day);
   if (Number.isNaN(day)) return toast('The day must be between 1 and 31.');
-  if (!isYM(f.start)) return toast('Pick the month it starts from.');
+  const start = pickedMonth(f, 'start');
+  if (!isYM(start)) return toast('Pick the month it starts from.');
   const c = cat(f.categoryId);
   const data = { type: f.type, name, amount, categoryId: c && c.type === f.type ? c.id : '', frequency: f.frequency === 'yearly' ? 'yearly' : 'monthly',
-    day, month: Number(f.month) || 1, start: f.start, paused: !!f.paused };
+    day, month: Number(f.month) || 1, start, paused: !!f.paused };
   const existing = f.id && state.recurring.find((r) => r.id === f.id);
   if (existing) Object.assign(existing, data);
   else state.recurring.push({ id: uid(), end: '', skips: [], note: '', ...data });
@@ -1429,10 +1443,11 @@ function submitEmi(f, form) {
   if (!tenure) return toast('Enter the tenure as a number of months, from 1 to 360.');
   const day = dayOf(f.day);
   if (Number.isNaN(day)) return toast('The day must be between 1 and 31.');
-  if (!isYM(f.start)) return toast('Pick the month of the first instalment.');
+  const start = pickedMonth(f, 'start');
+  if (!isYM(start)) return toast('Pick the starting month.');
   const paidBefore = String(f.paidBefore).trim() ? Number(String(f.paidBefore).trim()) : 0;
   if (!Number.isInteger(paidBefore) || paidBefore < 0 || paidBefore > tenure) return toast(`Instalments already paid must be a number from 0 to ${tenure}.`);
-  const data = { name, monthly, tenure, paidBefore, day, start: f.start, categoryId: cat(f.categoryId) ? f.categoryId : '' };
+  const data = { name, monthly, tenure, paidBefore, day, start, categoryId: cat(f.categoryId) ? f.categoryId : '' };
   const existing = f.id && state.emis.find((e) => e.id === f.id);
   if (existing) Object.assign(existing, data);
   else state.emis.push({ id: uid(), note: '', ...data });
@@ -1445,7 +1460,7 @@ function submitPlan(f) {
   if (!name) return toast('Say what the plan is.');
   const price = amountOf(f.price);
   if (Number.isNaN(price) || price < 0) return toast('That cost is not a valid number.');
-  const data = { name, price, target: isYM(f.target) ? f.target : '', priority: ['high', 'medium', 'low'].includes(f.priority) ? f.priority : 'medium', note: f.note.trim() };
+  const data = { name, price, target: isYM(pickedMonth(f, 'target')) ? pickedMonth(f, 'target') : '', priority: ['high', 'medium', 'low'].includes(f.priority) ? f.priority : 'medium', note: f.note.trim() };
   const existing = f.id && state.plans.find((p) => p.id === f.id);
   if (existing) Object.assign(existing, data, { done: !!f.done });
   else state.plans.push({ id: uid(), done: false, ...data });
