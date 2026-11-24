@@ -1,5 +1,5 @@
 // Offline support: serve the app from cache, refresh the cache in the background.
-const CACHE = 'feta-v3';
+const CACHE = 'feta-v4';
 const SHELL = [
   './',
   'index.html',
@@ -8,7 +8,10 @@ const SHELL = [
   'manifest.webmanifest',
   'icons/icon-180.png',
   'icons/icon-192.png',
-  'icons/icon-512.png'
+  'icons/icon-512.png',
+  'icons/icon-maskable-512.png',
+  'icons/favicon-32.png',
+  'icons/icon.svg'
 ];
 
 self.addEventListener('install', (event) => {

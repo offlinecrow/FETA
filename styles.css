@@ -6,10 +6,10 @@
   --ink2: #52514e;
   --muted: #898781;
   --line: #e1e0d9;
-  --accent: #2a78d6;
-  --accent-strong: #184f95;
+  --accent: #2f7183;
+  --accent-strong: #1f4651;
   --accent-ink: #ffffff;
-  --track: #cde2fb;
+  --track: #d2e9ef;
   --good: #006300;
   --crit: #d03b3b;
   --shadow: 0 1px 2px rgba(11, 11, 11, .06), 0 4px 16px rgba(11, 11, 11, .05);
@@ -23,10 +23,10 @@
     --ink2: #c3c2b7;
     --muted: #898781;
     --line: #2c2c2a;
-    --accent: #3987e5;
-    --accent-strong: #86b6ef;
-    --accent-ink: #ffffff;
-    --track: #0d366b;
+    --accent: #5cb3c7;
+    --accent-strong: #a3d7e3;
+    --accent-ink: #08191d;
+    --track: #1d3b43;
     --good: #0ca30c;
     --crit: #e66767;
     --shadow: none;
@@ -40,10 +40,10 @@
   --ink2: #c3c2b7;
   --muted: #898781;
   --line: #2c2c2a;
-  --accent: #3987e5;
-  --accent-strong: #86b6ef;
-  --accent-ink: #ffffff;
-  --track: #0d366b;
+  --accent: #5cb3c7;
+  --accent-strong: #a3d7e3;
+  --accent-ink: #08191d;
+  --track: #1d3b43;
   --good: #0ca30c;
   --crit: #e66767;
   --shadow: none;
@@ -282,7 +282,11 @@ div.row:active { background: none; }
 /* Welcome page */
 #app:has(.welcome) { padding-bottom: calc(env(safe-area-inset-bottom) + 32px); }
 .welcome { padding-top: 16px; }
-.welcome-icon { display: block; border-radius: 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
+.brand-logo { display: block; height: 64px; width: auto; color: var(--ink); }
+.welcome .brand { margin: 8px 0 10px; font-size: 0; }
+.brand-foot { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 28px; }
+.brand-foot .brand-logo { height: 30px; }
+.brand-foot .note { margin: 0; text-align: center; }
 .welcome h1 { font-size: 30px; margin-bottom: 2px; }
 .welcome .tagline { font-size: 17px; font-weight: 650; color: var(--accent); margin-bottom: 12px; }
 .welcome .lead { font-size: 17px; color: var(--ink2); margin-bottom: 8px; }
