@@ -145,7 +145,7 @@ h1, h2, h3, p { margin: 0; }
 /* Forms */
 .field { display: block; margin-bottom: 14px; }
 .field > span { display: block; font-size: 13px; color: var(--ink2); margin-bottom: 6px; }
-input[type="text"], input[type="date"], input[type="search"], select {
+input[type="text"], input[type="password"], input[type="date"], input[type="search"], select {
   width: 100%; min-height: 48px; padding: 10px 12px;
   background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
   font-size: 16px; -webkit-appearance: none; appearance: none;

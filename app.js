@@ -191,9 +191,20 @@ function load() {
   return blankState();
 }
 
-function save() {
+function saveLocal() {
   try { localStorage.setItem(KEY, JSON.stringify(state)); }
   catch (e) { toast('Could not save. Storage is full or blocked.'); }
+}
+
+// Every change is saved on the device first, then sent to the online account shortly after.
+function save() {
+  saveLocal();
+  changeSeq++;
+  if (!sync.session) return;
+  sync.dirty = true;
+  saveSync();
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(syncNow, 1500);
 }
 
 let state = load();
@@ -203,6 +214,291 @@ const ui = {
   planner: 'plans'
 };
 let pendingConfirm = null;
+
+/* ---------- Online account and sync ---------- */
+
+// These two values are public by design: they only identify the project. Each person's rows are protected by their sign-in.
+const SB_URL = 'https://snfcjitzkglpqetglize.supabase.co';
+const SB_KEY = 'sb_publishable_iFD2y5yQJqnl7jPigiwCGA_AKhxuPhe';
+const SYNC_KEY = 'budgetnest.sync';
+const COLLECTIONS = ['transactions', 'recurring', 'emis', 'plans', 'debts'];
+
+function loadSync() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SYNC_KEY));
+    if (s && typeof s === 'object') return { session: s.session || null, rev: Number(s.rev) || 0, dirty: !!s.dirty, last: s.last || '', error: '' };
+  } catch (e) { /* start signed out */ }
+  return { session: null, rev: 0, dirty: false, last: '', error: '' };
+}
+function saveSync() {
+  try { localStorage.setItem(SYNC_KEY, JSON.stringify({ session: sync.session, rev: sync.rev, dirty: sync.dirty, last: sync.last })); } catch (e) { /* ignore */ }
+}
+
+let sync = loadSync();
+let changeSeq = 0;
+let pushTimer = null;
+let syncing = null;
+let pendingRemote = null;
+
+async function sb(path, { method = 'GET', body, token, prefer } = {}) {
+  const headers = { apikey: SB_KEY, 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = 'Bearer ' + token;
+  if (prefer) headers.Prefer = prefer;
+  const res = await fetch(SB_URL + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (e) { /* not JSON */ }
+  if (!res.ok) {
+    const err = new Error((data && (data.msg || data.message || data.error_description)) || `Request failed (${res.status})`);
+    err.status = res.status;
+    err.code = (data && (data.error_code || data.code)) || '';
+    throw err;
+  }
+  return data;
+}
+
+function authMessage(e) {
+  if (e instanceof TypeError) return 'No internet connection. Try again when you are online.';
+  const known = {
+    invalid_credentials: 'Wrong email or password.',
+    email_not_confirmed: 'Confirm your email first: open the link we sent you, then sign in.',
+    user_already_exists: 'That email already has an account. Sign in instead.',
+    email_exists: 'That email already has an account. Sign in instead.',
+    weak_password: 'Choose a longer password, at least 6 characters.',
+    over_email_send_rate_limit: 'Too many emails were sent. Wait a few minutes and try again.',
+    email_address_invalid: 'That email address is not valid.',
+    same_password: 'Choose a password different from the old one.'
+  };
+  return known[e.code] || e.message || 'Something went wrong. Try again.';
+}
+
+function setSession(d, user) {
+  const u = user || d.user;
+  sync.session = { access_token: d.access_token, refresh_token: d.refresh_token, expires_at: Date.now() + (Number(d.expires_in) || 3600) * 1000,
+    user: { id: String(u.id), email: String(u.email || '') } };
+  saveSync();
+}
+
+function dropSession() {
+  sync.session = null; sync.rev = 0; sync.dirty = false; sync.last = ''; sync.error = '';
+  pendingRemote = null;
+  saveSync();
+}
+
+async function freshToken() {
+  const s = sync.session;
+  if (s.expires_at - Date.now() > 60000) return s.access_token;
+  try {
+    setSession(await sb('/auth/v1/token?grant_type=refresh_token', { method: 'POST', body: { refresh_token: s.refresh_token } }));
+  } catch (e) {
+    if (e.status === 400 || e.status === 401 || e.status === 403) { dropSession(); toast('Please sign in again.'); render(); }
+    throw e;
+  }
+  return sync.session.access_token;
+}
+
+const hasData = (s) => COLLECTIONS.some((k) => Array.isArray(s[k]) && s[k].length > 0);
+
+async function pullRow() {
+  const token = await freshToken();
+  const rows = await sb(`/rest/v1/user_data?select=data,rev&user_id=eq.${encodeURIComponent(sync.session.user.id)}`, { token });
+  return (rows && rows[0]) || null;
+}
+
+// Saves the whole data set as revision baseRev + 1. Returns false if another device saved first.
+async function pushRow(baseRev) {
+  const token = await freshToken();
+  const seq = changeSeq;
+  const uid = sync.session.user.id;
+  const payload = { data: state, rev: baseRev + 1, updated_at: new Date().toISOString() };
+  let rows;
+  if (baseRev === 0) {
+    try { rows = await sb('/rest/v1/user_data', { method: 'POST', token, prefer: 'return=representation', body: { user_id: uid, ...payload } }); }
+    catch (e) { if (e.status === 409) return false; throw e; }
+  } else {
+    rows = await sb(`/rest/v1/user_data?user_id=eq.${encodeURIComponent(uid)}&rev=eq.${baseRev}`, { method: 'PATCH', token, prefer: 'return=representation', body: payload });
+  }
+  if (!rows || !rows.length) return false;
+  sync.rev = baseRev + 1;
+  if (seq === changeSeq) sync.dirty = false;
+  saveSync();
+  return true;
+}
+
+// Combines two copies: everything from both is kept, and where both have the same entry this device's version wins.
+function mergeStates(local, remote) {
+  const out = sanitize(local);
+  const other = sanitize(remote);
+  const map = {};
+  for (const c of other.categories) {
+    const hit = out.categories.find((x) => x.id === c.id) || out.categories.find((x) => x.type === c.type && x.name.toLowerCase() === c.name.toLowerCase());
+    if (hit) map[c.id] = hit.id; else { out.categories.push(c); map[c.id] = c.id; }
+  }
+  for (const k of COLLECTIONS) {
+    const ids = new Set(out[k].map((x) => x.id));
+    for (const x of other[k]) {
+      if (ids.has(x.id)) continue;
+      if (x.categoryId) x.categoryId = map[x.categoryId] || '';
+      out[k].push(x);
+    }
+  }
+  out.settings.started = true;
+  return out;
+}
+
+function adopt(remote) {
+  state = sanitize(remote);
+  state.settings.started = true;
+  if (!state.categories.length) state.categories = defaultCategories();
+  fmtCache = {};
+  saveLocal(); applyTheme(); render();
+}
+
+function syncNow() {
+  if (!sync.session || pendingRemote) return Promise.resolve();
+  if (!syncing) {
+    syncing = doSync().finally(() => { syncing = null; if (ui.tab === 'more' && !$('#sheet-root').firstChild) render(); });
+  }
+  return syncing;
+}
+
+async function doSync() {
+  clearTimeout(pushTimer);
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const row = await pullRow();
+      const remoteRev = row ? Number(row.rev) || 0 : 0;
+      if (row && remoteRev !== sync.rev) {
+        // Another device saved since this one last synced.
+        if (validState(row.data)) {
+          if (sync.dirty) { state = mergeStates(state, row.data); fmtCache = {}; saveLocal(); render(); }
+          else adopt(row.data);
+        }
+        sync.rev = remoteRev;
+        saveSync();
+      }
+      if (row && !sync.dirty) break;
+      if (await pushRow(remoteRev)) break;
+    }
+    sync.error = '';
+    sync.last = new Date().toISOString();
+  } catch (e) {
+    sync.error = e instanceof TypeError ? 'offline' : e.status === 404 ? 'The online database has not been set up yet.' : (e.message || 'Unknown error');
+  }
+  saveSync();
+}
+
+function syncStatus() {
+  if (syncing) return 'Syncing…';
+  if (sync.error === 'offline') return 'Offline. Changes are saved on this device and will sync when you are back online.';
+  if (sync.error) return `Could not sync: ${sync.error}`;
+  if (sync.dirty) return 'Changes waiting to sync.';
+  return sync.last ? `Synced ${new Date(sync.last).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}` : 'Not synced yet.';
+}
+
+function startApp() {
+  state.settings.started = true;
+  if (!state.categories.length) state.categories = defaultCategories();
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+}
+
+// Runs once after signing in: decide between the data on this device and the data already in the account.
+async function afterSignIn() {
+  const row = await pullRow();
+  const remote = row && validState(row.data) ? row.data : null;
+  sync.rev = row ? Number(row.rev) || 0 : 0;
+  if (remote && hasData(remote) && hasData(state)) {
+    pendingRemote = remote;
+    saveSync();
+    return chooseSheet();
+  }
+  if (remote && hasData(remote)) { adopt(remote); sync.dirty = false; }
+  else { startApp(); saveLocal(); sync.dirty = true; }
+  saveSync();
+  closeSheet(); render();
+  await syncNow();
+}
+
+function chooseSheet() {
+  const n = (s) => plural(s.transactions.length, 'transaction');
+  openSheet('Which data do you want?', `
+    <p>This device has ${n(state)} and your account already has ${n(pendingRemote)}.</p>
+    <button class="btn" data-act="sync-choose" data-id="merge">Combine both</button>
+    <button class="btn ghost" data-act="sync-choose" data-id="remote">Use the account’s data and discard this device’s</button>
+    <button class="btn ghost" data-act="sync-choose" data-id="local">Use this device’s data and replace the account’s</button>`);
+}
+
+function accountSheet(mode) {
+  const up = mode === 'signup';
+  openSheet(up ? 'Create an account' : 'Sign in', `
+    <form data-form="auth" novalidate>
+      <input type="hidden" name="mode" value="${up ? 'signup' : 'signin'}">
+      <label class="field"><span>Email</span><input type="text" inputmode="email" name="email" autocomplete="email" autocapitalize="none" spellcheck="false" data-autofocus></label>
+      <label class="field"><span>Password${up ? ' (at least 6 characters)' : ''}</span><input type="password" name="password" autocomplete="${up ? 'new-password' : 'current-password'}"></label>
+      ${up ? '<p class="note">Your data is saved to your account so it is backed up and the same on every device you sign in on. We send one email to confirm the address.</p>' : ''}
+      <button class="btn">${up ? 'Create account' : 'Sign in'}</button>
+      <button type="button" class="btn ghost" data-act="open-account" data-id="${up ? 'signin' : 'signup'}">${up ? 'I already have an account' : 'Create a new account'}</button>
+      ${up ? '' : '<button type="button" class="link center" data-act="forgot">Forgot password?</button>'}
+    </form>`);
+}
+
+function newPasswordSheet() {
+  openSheet('Set a new password', `
+    <form data-form="newpass" novalidate>
+      <label class="field"><span>New password (at least 6 characters)</span><input type="password" name="password" autocomplete="new-password" data-autofocus></label>
+      <button class="btn">Save password</button>
+    </form>`);
+}
+
+const validEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+let authBusy = false;
+
+async function submitAuth(f) {
+  if (authBusy) return;
+  const email = f.email.trim().toLowerCase();
+  if (!validEmail(email)) return toast('Enter your email address.');
+  if (f.password.length < 6) return toast('The password needs at least 6 characters.');
+  authBusy = true;
+  try {
+    if (f.mode === 'signup') {
+      const d = await sb('/auth/v1/signup', { method: 'POST', body: { email, password: f.password } });
+      if (d && d.access_token) { setSession(d); await afterSignIn(); toast('Account created'); }
+      else openSheet('Check your email', `<p>We sent a confirmation link to ${esc(email)}. Open it, then come back to this app and sign in with your email and password.</p>
+        <p class="note">On an iPhone the link opens in Safari. That is fine: return to the app from your home screen afterwards.</p>
+        <button class="btn" data-act="open-account" data-id="signin">Sign in</button>`);
+    } else {
+      setSession(await sb('/auth/v1/token?grant_type=password', { method: 'POST', body: { email, password: f.password } }));
+      await afterSignIn();
+      if (!pendingRemote) toast('Signed in');
+    }
+  } catch (e) { toast(authMessage(e)); }
+  authBusy = false;
+}
+
+async function submitNewPass(f) {
+  if (f.password.length < 6) return toast('The password needs at least 6 characters.');
+  try {
+    await sb('/auth/v1/user', { method: 'PUT', token: await freshToken(), body: { password: f.password } });
+    closeSheet(); toast('Password changed');
+    await afterSignIn();
+  } catch (e) { toast(authMessage(e)); }
+}
+
+// Confirmation and password-reset emails send the person back here with their sign-in in the address.
+async function handleAuthLink() {
+  if (!/access_token=|error_description=/.test(location.hash)) return false;
+  const h = new URLSearchParams(location.hash.slice(1));
+  history.replaceState(null, '', location.pathname + location.search);
+  if (h.get('error_description')) { toast(h.get('error_description')); return false; }
+  try {
+    const token = h.get('access_token');
+    const user = await sb('/auth/v1/user', { token });
+    setSession({ access_token: token, refresh_token: h.get('refresh_token'), expires_in: h.get('expires_in') }, user);
+    if (h.get('type') === 'recovery') newPasswordSheet();
+    else { await afterSignIn(); if (!pendingRemote) toast('Email confirmed. You are signed in.'); }
+    return true;
+  } catch (e) { toast(authMessage(e)); return false; }
+}
 
 /* ---------- Derived data ---------- */
 
@@ -389,12 +685,12 @@ function txGroups(list, emptyText) {
 function viewWelcome() {
   return `<div class="welcome">
     <h1>Budget Nest</h1>
-    <p>Your family’s income, expenses, savings, bills, EMIs, plans and money owed, all in one place. Everything stays on this phone.</p>
-    <form data-form="onboard" novalidate>
-      <label class="field"><span>Currency</span><select name="currency">${currencyOptions(state.settings.currency)}</select></label>
-      <p class="note" style="margin-top:0">You start with ready-made categories such as Job salary, House, Children and Gym. You can rename, add or remove any of them later under More.</p>
-      <button class="btn">Get started</button>
-    </form>
+    <p>Your family’s income, expenses, savings, bills, EMIs, plans and money owed, all in one place.</p>
+    <label class="field"><span>Currency</span><select data-setting="currency">${currencyOptions(state.settings.currency)}</select></label>
+    <button class="btn" data-act="open-account" data-id="signup">Create an account</button>
+    <button class="btn ghost" data-act="open-account" data-id="signin">I already have an account</button>
+    <button class="btn ghost" data-act="start">Use without an account</button>
+    <p class="note" style="margin-top:14px">With an account your data is backed up online and stays the same on every device you sign in on. Without one it stays only on this device. You can create an account later under More.</p>
   </div>`;
 }
 
@@ -738,7 +1034,22 @@ function viewMore() {
       <span class="row-main"><span class="row-top"><span class="name">${esc(c.name)}</span>${c.budget ? `<span class="row-sub">limit ${fmt(c.budget)}/month</span>` : ''}</span></span></button>`).join('')
       : '<div class="empty">None yet.</div>'}</div>`;
   const inc = catsOf('income');
+  const account = sync.session
+    ? `<section class="card">
+        <div class="label">Signed in as</div>
+        <div class="name" style="margin:2px 0 6px;white-space:normal;overflow-wrap:anywhere">${esc(sync.session.user.email)}</div>
+        <p class="note" style="margin:0 0 14px">${esc(syncStatus())}</p>
+        <button class="btn ghost" data-act="sync-now">Sync now</button>
+        <button class="btn ghost" data-act="sign-out">Sign out</button>
+      </section>`
+    : `<section class="card">
+        <p class="note" style="margin:0 0 14px">Create an account to back up your data online and use it on more than one device. Right now it is stored only on this device.</p>
+        <button class="btn" data-act="open-account" data-id="signup">Create an account</button>
+        <button class="btn ghost" data-act="open-account" data-id="signin">Sign in</button>
+      </section>`;
   return `<header class="top"><h1>More</h1></header>
+    <div class="sec-head" style="margin-top:0"><h2>Account</h2></div>
+    ${account}
     ${catList('Primary income sources', inc.filter((c) => c.group === 'primary'), 'income', 'primary')}
     ${catList('Secondary income sources', inc.filter((c) => c.group === 'secondary'), 'income', 'secondary')}
     ${catList('Expense categories', catsOf('expense'), 'expense')}
@@ -753,7 +1064,7 @@ function viewMore() {
     </section>
     <div class="sec-head"><h2>Your data</h2></div>
     <section class="card">
-      <p class="note" style="margin:0 0 14px">Everything lives only on this device. Save a backup now and then, because clearing Safari website data or deleting the app icon removes it.</p>
+      <p class="note" style="margin:0 0 14px">${sync.session ? 'Your data is saved to your account. A backup file is an extra copy you keep yourself.' : 'Everything lives only on this device. Save a backup now and then, because clearing Safari website data or deleting the app icon removes it.'}</p>
       <button class="btn" data-act="backup">Save a backup file</button>
       <label class="btn ghost" style="text-align:center;margin-top:10px">Restore from a backup<input type="file" id="restore-file" accept="application/json,.json" class="hidden"></label>
       <button class="btn ghost" data-act="export-csv">Export transactions (CSV)</button>
@@ -984,15 +1295,6 @@ const amountOf = (v) => (String(v ?? '').trim() ? parseAmount(v) : 0);
 const dayOf = (v) => { const n = Math.round(Number(String(v).trim())); return n >= 1 && n <= 31 ? n : NaN; };
 const done = () => { save(); closeSheet(); render(); };
 
-function submitOnboard(f) {
-  state.settings.currency = f.currency;
-  state.settings.started = true;
-  if (!state.categories.length) state.categories = defaultCategories();
-  fmtCache = {};
-  save(); render();
-  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-}
-
 function submitTx(f) {
   const amount = parseAmount(f.amount);
   if (!(amount > 0)) return toast('Enter an amount above zero.');
@@ -1150,6 +1452,37 @@ const remove = (key, id) => { state[key] = state[key].filter((x) => x.id !== id)
 
 const actions = {
   'tab': (el) => { ui.tab = el.dataset.id; ui.bar = null; render(); window.scrollTo(0, 0); },
+  'start': () => { startApp(); save(); render(); },
+  'open-account': (el) => accountSheet(el.dataset.id === 'signin' ? 'signin' : 'signup'),
+  'forgot': async () => {
+    const email = ($('#sheet-root [name="email"]').value || '').trim().toLowerCase();
+    if (!validEmail(email)) return toast('Type your email address first, then tap “Forgot password?”.');
+    try {
+      await sb('/auth/v1/recover', { method: 'POST', body: { email } });
+      openSheet('Check your email', `<p>If ${esc(email)} has an account, we sent it a link to set a new password.</p><button class="btn ghost" data-act="close-sheet">Close</button>`);
+    } catch (e) { toast(authMessage(e)); }
+  },
+  'sync-now': async () => { await syncNow(); render(); toast(sync.error ? syncStatus() : 'Synced'); },
+  'sync-choose': async (el) => {
+    const remote = pendingRemote;
+    if (!remote) return closeSheet();
+    pendingRemote = null;
+    if (el.dataset.id === 'remote') { adopt(remote); sync.dirty = false; }
+    else {
+      if (el.dataset.id === 'merge') { state = mergeStates(state, remote); fmtCache = {}; }
+      saveLocal(); sync.dirty = true;
+    }
+    saveSync(); closeSheet(); render();
+    await syncNow();
+    toast(sync.error ? syncStatus() : 'Synced');
+  },
+  'sign-out': () => confirmSheet('Sign out?', sync.dirty
+    ? 'Some changes have not been synced yet. Your data stays on this device, but changes made while signed out are not backed up.'
+    : 'Your data stays on this device and in your account. Changes made while signed out are not backed up until you sign in again.', 'Sign out', () => {
+    const token = sync.session && sync.session.access_token;
+    if (token) sb('/auth/v1/logout', { method: 'POST', token }).catch(() => {});
+    dropSession(); render(); toast('Signed out');
+  }),
   'close-sheet': () => closeSheet(),
   'confirm-yes': () => { const fn = pendingConfirm; closeSheet(); if (fn) fn(); },
   'month': (el) => { ui.month = addMonths(ui.month, Number(el.dataset.d)); render(); },
@@ -1256,7 +1589,7 @@ document.addEventListener('click', (e) => {
   if (fn) fn(el);
 });
 
-const submitters = { onboard: submitOnboard, tx: submitTx, cat: submitCat, rec: submitRec, emi: submitEmi, plan: submitPlan, debt: submitDebt, debtpay: submitDebtPay };
+const submitters = { auth: submitAuth, newpass: submitNewPass, tx: submitTx, cat: submitCat, rec: submitRec, emi: submitEmi, plan: submitPlan, debt: submitDebt, debtpay: submitDebtPay };
 document.addEventListener('submit', (e) => {
   const form = e.target.closest('[data-form]');
   if (!form) return;
@@ -1301,6 +1634,10 @@ document.addEventListener('keydown', (e) => {
 
 applyTheme();
 render();
+
+handleAuthLink().then((handled) => { if (!handled) syncNow(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncNow(); });
+window.addEventListener('online', () => syncNow());
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
