@@ -259,6 +259,7 @@ async function sb(path, { method = 'GET', body, token, prefer } = {}) {
 
 function authMessage(e) {
   if (e instanceof TypeError) return 'No internet connection. Try again when you are online.';
+  if (e.code === 'PGRST205' || e.status === 404) return 'Your sign-in worked, but the online database is not set up yet, so nothing can be saved to your account.';
   const known = {
     invalid_credentials: 'Wrong email or password.',
     email_not_confirmed: 'Confirm your email first: open the link we sent you, then sign in.',
