@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '12';
+const APP_VERSION = '13';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -664,7 +664,8 @@ function render() {
   const overdue = dueItems(curYM()).filter((it) => dueStatus(it) === 'unpaid').length;
   app.innerHTML = `
     ${views[ui.tab]()}
-    ${['home', 'bills', 'reports'].includes(ui.tab) ? '<button class="fab" data-act="add-tx" aria-label="Add income, expense or savings">+</button>' : ''}
+    ${ui.tab === 'bills' ? `<button class="fab" data-act="add-bill" aria-label="${ui.bills === 'emi' ? 'Add an EMI' : 'Add a monthly bill'}">+</button>`
+      : ['home', 'reports'].includes(ui.tab) ? '<button class="fab" data-act="add-tx" aria-label="Add income, expense or savings">+</button>' : ''}
     <nav class="tabbar"><div class="tabbar-in">
       ${tabs.map(([id, label]) => `<button class="tab ${ui.tab === id ? 'on' : ''}" data-act="tab" data-id="${id}" ${ui.tab === id ? 'aria-current="page"' : ''}>
         ${ICONS[id]}${id === 'bills' && overdue ? `<i class="badge" aria-label="${overdue} unpaid">${overdue}</i>` : ''}<span>${label}</span></button>`).join('')}
@@ -877,10 +878,11 @@ function viewBillsMonth() {
     ${monthNav(ym, 'month')}
     ${ym === curYM() ? '' : '<button class="link center" data-act="month-now">Back to this month</button>'}
     <div class="sec-head"><h2>To pay</h2><span class="sub">${out.length ? `${paidCount} of ${out.length} paid · ${fmt(openOut)} unpaid` : ''}</span></div>
-    <div class="list">${out.length ? out.map(dueRow).join('') : '<div class="empty">No repeating expenses or EMIs fall in this month. Add your rent, school fee, bills and subscriptions below and they will show up here every month.</div>'}</div>
+    <div class="list">${out.length ? out.map(dueRow).join('') : '<div class="empty">No bills in this month yet. Add your rent, school fee, utility bills and subscriptions once, and they come back here every month as Unpaid until you pay them.</div>'}</div>
+    <button class="btn ghost" style="margin-top:12px" data-act="add-rec">+ Add a monthly bill</button>
     ${inc.length ? `<div class="sec-head"><h2>Expected income</h2></div><div class="list">${inc.map(dueRow).join('')}</div>` : ''}
 
-    <div class="sec-head"><h2>Repeating items</h2><button class="link" data-act="add-rec">+ Add</button></div>
+    <div class="sec-head"><h2>All your bills and repeating items</h2><button class="link" data-act="add-rec">+ Add</button></div>
     <div class="list">${state.recurring.length ? state.recurring.map((r) => `<button class="row" data-act="edit-rec" data-id="${r.id}">
         <span class="emoji" aria-hidden="true">${esc((cat(r.categoryId) || {}).emoji || '•')}</span>
         <span class="row-main"><span class="row-top"><span class="name">${esc(r.name)}</span><span class="pill">${TYPE_LABEL[r.type]}</span></span>
@@ -1182,6 +1184,7 @@ function txSheet(tx, preset = {}) {
       </div>
       <button class="btn">${tx ? 'Save changes' : preset.cta || 'Add'}</button>
       ${!tx && preset.canSkip ? `<button type="button" class="btn ghost" data-act="skip-due" data-id="${v.recurringId}" data-period="${v.period}">Skip this month</button>` : ''}
+      ${tx && !linked && tx.type !== 'income' ? `<button type="button" class="btn ghost" data-act="tx-to-bill" data-id="${tx.id}">Make this a monthly bill</button>` : ''}
       ${tx ? `<button type="button" class="btn danger" data-act="del-tx" data-id="${tx.id}">Delete</button>` : ''}
     </form>`);
 }
@@ -1209,7 +1212,7 @@ function catSheet(c, type, group) {
 function recSheet(r) {
   const type = r ? r.type : 'expense';
   const freq = r ? r.frequency : 'monthly';
-  openSheet(r ? 'Edit repeating item' : 'New repeating item', `
+  openSheet(r ? 'Edit bill or repeating item' : 'New monthly bill', `
     <form data-form="rec" novalidate>
       <input type="hidden" name="id" value="${r ? r.id : ''}">
       ${typeRadios(type)}
@@ -1611,6 +1614,21 @@ const actions = {
   },
 
   'add-rec': () => recSheet(null),
+  'add-bill': () => (ui.bills === 'emi' ? emiSheet(null) : recSheet(null)),
+  // Turns a one-off entry into a bill that repeats every month, and counts this entry as that month's payment.
+  'tx-to-bill': (el) => {
+    const t = find(state.transactions, el);
+    if (!t || t.recurringId || t.emiId) return;
+    const c = cat(t.categoryId);
+    const name = t.note || (c ? c.name : 'Bill');
+    const r = { id: uid(), type: t.type, name, amount: t.amount, categoryId: t.categoryId, frequency: 'monthly', day: Number(t.date.slice(8, 10)),
+      month: Number(t.date.slice(5, 7)), start: t.date.slice(0, 7), end: '', paused: false, skips: [], note: '' };
+    state.recurring.push(r);
+    Object.assign(t, { recurringId: r.id, period: t.date.slice(0, 7), note: name });
+    ui.tab = 'bills'; ui.bills = 'month'; ui.month = t.date.slice(0, 7);
+    done(); window.scrollTo(0, 0);
+    toast('Now a monthly bill. It is marked paid for this month.');
+  },
   'edit-rec': (el) => { const r = find(state.recurring, el); if (r) recSheet(r); },
   'del-rec': (el) => confirmSheet('Delete this repeating item?', 'It stops appearing in Bills. Payments you already recorded stay in your history.', 'Delete', () => { remove('recurring', el.dataset.id); save(); render(); }),
 
