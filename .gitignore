@@ -1,3 +1,9 @@
 tools/dev-preview.html
 .claude/
 *.log
+# Android: build output, the installable file and the private signing key never go to GitHub
+android/build/
+android/*.jks
+android/keystore-password.txt
+*.apk
+*.idsig

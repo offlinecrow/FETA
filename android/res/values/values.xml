@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FETA</string>
+    <color name="icon_background">#FFFFFF</color>
+
+    <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:statusBarColor">#F9F9F7</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">#FCFCFB</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '8';
+const APP_VERSION = '9';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -1101,8 +1101,8 @@ function viewMore() {
       <button class="btn ghost" data-act="export-csv">Export transactions (CSV)</button>
       <button class="btn danger" data-act="erase">Erase everything</button>
     </section>
-    <div class="sec-head"><h2>Put it on your home screen</h2></div>
-    <section class="card"><p class="note" style="margin:0">In Safari, tap the Share button, then “Add to Home Screen”. The app then opens full screen and works without internet.</p></section>
+    ${window.FetaAndroid ? '' : `<div class="sec-head"><h2>Put it on your home screen</h2></div>
+    <section class="card"><p class="note" style="margin:0">In Safari, tap the Share button, then “Add to Home Screen”. The app then opens full screen and works without internet.</p></section>`}
     <div class="sec-head"><h2>App version</h2></div>
     <section class="card">
       <p class="note" style="margin:0 0 14px">You have version ${APP_VERSION}. The app updates itself when you open it with internet. If something looks out of date, tap the button. Your data is not affected.</p>
@@ -1436,6 +1436,11 @@ function submitDebtPay(f) {
 /* ---------- Export, backup, restore ---------- */
 
 async function shareOrDownload(filename, text, mime) {
+  // Inside the Android app a web page cannot save files itself, so the app does it.
+  if (window.FetaAndroid && window.FetaAndroid.saveFile) {
+    if (window.FetaAndroid.saveFile(filename, mime, text)) return;
+    return toast('Could not save the file.');
+  }
   const file = new File([text], filename, { type: mime });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
     try { await navigator.share({ files: [file] }); return; }
@@ -1682,6 +1687,13 @@ document.addEventListener('input', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && $('#sheet-root').firstChild) closeSheet();
 });
+
+// Called by the Android app when the phone's Back button is pressed. Returns true if FETA used it.
+window.fetaBack = () => {
+  if ($('#sheet-root').firstChild) { closeSheet(); return true; }
+  if (state.settings.started && ui.tab !== 'home') { ui.tab = 'home'; ui.bar = null; render(); window.scrollTo(0, 0); return true; }
+  return false;
+};
 
 /* ---------- Start ---------- */
 
