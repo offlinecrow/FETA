@@ -278,3 +278,15 @@ input[type="month"] { width: 100%; min-height: 48px; padding: 10px 12px; backgro
 .row.total .row-sub { white-space: normal; }
 div.row:active { background: none; }
 .month-nav + .sec-head { margin-top: 14px; }
+
+/* Welcome page */
+#app:has(.welcome) { padding-bottom: calc(env(safe-area-inset-bottom) + 32px); }
+.welcome { padding-top: 16px; }
+.welcome-icon { display: block; border-radius: 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
+.welcome h1 { font-size: 30px; }
+.welcome .lead { font-size: 17px; color: var(--ink2); margin-bottom: 8px; }
+.welcome h3 { font-size: 17px; margin: 24px 0 10px; }
+.points { margin-bottom: 4px; }
+.points .row { align-items: flex-start; }
+.points .row-main { gap: 2px; }
+.point-text { font-size: 14px; color: var(--ink2); }

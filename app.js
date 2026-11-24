@@ -682,11 +682,29 @@ function txGroups(list, emptyText) {
 
 /* ---------- Welcome ---------- */
 
+const WELCOME_POINTS = [
+  ['💰', 'Income and expenses', 'Record what comes in and what goes out, with a category and a note for each.'],
+  ['📅', 'Bills and EMIs', 'Rent, school fees, subscriptions and instalments show up every month until you mark them paid.'],
+  ['🏦', 'Savings', 'Set money aside into funds, such as a children’s fund or an emergency fund.'],
+  ['🔮', 'Upcoming months', 'See the fixed expenses waiting in each coming month, with a total.'],
+  ['🎯', 'Plans', 'List what you want to buy later and how much to save for it each month.'],
+  ['🤝', 'Receivable and payable', 'Keep track of money people owe you and money you owe.'],
+  ['📊', 'Reports', 'Totals by day, month and year, and by category.']
+];
+
 function viewWelcome() {
   return `<div class="welcome">
-    <h1>Budget Nest</h1>
-    <p>Your family’s income, expenses, savings, bills, EMIs, plans and money owed, all in one place.</p>
-    <label class="field"><span>Currency</span><select data-setting="currency">${currencyOptions(state.settings.currency)}</select></label>
+    <img class="welcome-icon" src="icons/icon-192.png" alt="" width="84" height="84">
+    <h1>Welcome to Budget Nest</h1>
+    <p class="lead">A simple way to track your family’s money. Note your income and spending as it happens, and always know what is left for the month.</p>
+
+    <h3>What you can do</h3>
+    <div class="list points">${WELCOME_POINTS.map(([emoji, title, text]) => `<div class="row">
+      <span class="emoji" aria-hidden="true">${emoji}</span>
+      <span class="row-main"><span class="name">${title}</span><span class="point-text">${text}</span></span></div>`).join('')}</div>
+
+    <h3>Get started</h3>
+    <label class="field"><span>Your currency</span><select data-setting="currency">${currencyOptions(state.settings.currency)}</select></label>
     <button class="btn" data-act="open-account" data-id="signup">Create an account</button>
     <button class="btn ghost" data-act="open-account" data-id="signin">I already have an account</button>
     <button class="btn ghost" data-act="start">Use without an account</button>
