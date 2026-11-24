@@ -1,4 +1,4 @@
--- Budget Nest: one row per person holding their data.
+-- FETA (Family Expense Tracker App): one row per person holding their data.
 -- Run this once in the Supabase dashboard: SQL Editor > New query > paste > Run.
 
 create table if not exists public.user_data (

@@ -1,5 +1,5 @@
 // Offline support: serve the app from cache, refresh the cache in the background.
-const CACHE = 'budget-nest-v2';
+const CACHE = 'feta-v3';
 const SHELL = [
   './',
   'index.html',

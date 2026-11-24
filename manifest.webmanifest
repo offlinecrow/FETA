@@ -1,7 +1,7 @@
 {
-  "name": "Budget Nest",
-  "short_name": "Budget Nest",
-  "description": "A private budget and expense tracker that keeps your data on your phone.",
+  "name": "FETA - Family Expense Tracker App",
+  "short_name": "FETA",
+  "description": "Family Expense Tracker App: income, expenses, savings, bills, EMIs and plans in one place.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

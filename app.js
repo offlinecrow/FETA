@@ -695,7 +695,8 @@ const WELCOME_POINTS = [
 function viewWelcome() {
   return `<div class="welcome">
     <img class="welcome-icon" src="icons/icon-192.png" alt="" width="84" height="84">
-    <h1>Welcome to Budget Nest</h1>
+    <h1>Welcome to FETA</h1>
+    <p class="tagline">Family Expense Tracker App</p>
     <p class="lead">A simple way to track your family’s money. Note your income and spending as it happens, and always know what is left for the month.</p>
 
     <h3>What you can do</h3>
@@ -1090,7 +1091,7 @@ function viewMore() {
     </section>
     <div class="sec-head"><h2>Put it on your home screen</h2></div>
     <section class="card"><p class="note" style="margin:0">In Safari, tap the Share button, then “Add to Home Screen”. The app then opens full screen and works without internet.</p></section>
-    <p class="note" style="text-align:center">Budget Nest · ${plural(state.transactions.length, 'transaction')}</p>`;
+    <p class="note" style="text-align:center">FETA · Family Expense Tracker App · ${plural(state.transactions.length, 'transaction')}</p>`;
 }
 
 /* ---------- Sheets ---------- */
@@ -1442,7 +1443,7 @@ function exportCsv() {
     const c = cat(t.categoryId);
     rows.push([t.date, TYPE_LABEL[t.type], cell(c ? c.name : ''), t.type === 'income' && c ? c.group : '', cell(t.note), t.amount]);
   }
-  shareOrDownload(`budget-nest-${today()}.csv`, '﻿' + rows.map((r) => r.join(',')).join('\r\n'), 'text/csv');
+  shareOrDownload(`feta-${today()}.csv`, '﻿' + rows.map((r) => r.join(',')).join('\r\n'), 'text/csv');
 }
 
 function restoreFrom(file) {
@@ -1450,7 +1451,7 @@ function restoreFrom(file) {
   reader.onload = () => {
     let data;
     try { data = JSON.parse(reader.result); } catch (e) { data = null; }
-    if (!validState(data)) return toast('That file is not a Budget Nest backup.');
+    if (!validState(data)) return toast('That file is not a FETA backup.');
     confirmSheet('Restore this backup?', `This replaces everything on this device with the backup (${plural(data.transactions.length, 'transaction')}).`,
       'Replace my data', () => {
         state = sanitize(data);
@@ -1588,7 +1589,7 @@ const actions = {
   },
   'bar': (el) => { ui.bar = Number(el.dataset.id); render(); },
 
-  'backup': () => shareOrDownload(`budget-nest-backup-${today()}.json`, JSON.stringify(state, null, 2), 'application/json'),
+  'backup': () => shareOrDownload(`feta-backup-${today()}.json`, JSON.stringify(state, null, 2), 'application/json'),
   'export-csv': () => exportCsv(),
   'erase': () => confirmSheet('Erase everything?', 'All income, expenses, savings, bills, EMIs, plans and money owed on this device will be deleted. This cannot be undone.', 'Erase everything', () => {
     const { currency, theme } = state.settings;
