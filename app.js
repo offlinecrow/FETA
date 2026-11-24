@@ -1,0 +1,1309 @@
+(() => {
+'use strict';
+
+/* ---------- Constants ---------- */
+
+const KEY = 'budgetnest.v2';
+const OLD_KEY = 'budgetnest.v1';
+const TYPES = ['expense', 'income', 'saving'];
+const TYPE_LABEL = { expense: 'Expense', income: 'Income', saving: 'Savings' };
+const TYPE_PLURAL = { expense: 'Expenses', income: 'Income', saving: 'Savings' };
+
+const CURRENCIES = ['BDT', 'USD', 'EUR', 'GBP', 'INR', 'PKR', 'LKR', 'NPR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR',
+  'JOD', 'EGP', 'MAD', 'CAD', 'AUD', 'NZD', 'JPY', 'CNY', 'HKD', 'SGD', 'MYR', 'IDR', 'PHP', 'THB', 'VND', 'KRW',
+  'CHF', 'SEK', 'NOK', 'DKK', 'PLN', 'TRY', 'ZAR', 'NGN', 'KES', 'GHS', 'BRL', 'MXN'];
+
+const REGION_CURRENCY = { BD: 'BDT', US: 'USD', GB: 'GBP', IN: 'INR', PK: 'PKR', LK: 'LKR', NP: 'NPR', AE: 'AED', SA: 'SAR',
+  QA: 'QAR', KW: 'KWD', BH: 'BHD', OM: 'OMR', JO: 'JOD', EG: 'EGP', MA: 'MAD', CA: 'CAD', AU: 'AUD', NZ: 'NZD', JP: 'JPY',
+  CN: 'CNY', HK: 'HKD', SG: 'SGD', MY: 'MYR', ID: 'IDR', PH: 'PHP', TH: 'THB', VN: 'VND', KR: 'KRW', CH: 'CHF', SE: 'SEK',
+  NO: 'NOK', DK: 'DKK', PL: 'PLN', TR: 'TRY', ZA: 'ZAR', NG: 'NGN', KE: 'KES', GH: 'GHS', BR: 'BRL', MX: 'MXN', DE: 'EUR',
+  FR: 'EUR', ES: 'EUR', IT: 'EUR', NL: 'EUR', IE: 'EUR', PT: 'EUR', BE: 'EUR', AT: 'EUR', FI: 'EUR', GR: 'EUR' };
+
+const DEFAULT_CATEGORIES = [
+  ['income', 'primary', 'Job salary', '💼'], ['income', 'primary', 'Business profit', '🏪'], ['income', 'primary', 'Rent received', '🏘️'],
+  ['income', 'secondary', 'Side hustle', '💻'], ['income', 'secondary', 'Bonus', '🎉'], ['income', 'secondary', 'Gift received', '🎁'],
+  ['income', 'secondary', 'Other income', '➕'],
+  ['expense', '', 'House', '🏠'], ['expense', '', 'Groceries', '🛒'], ['expense', '', 'Bills & utilities', '💡'],
+  ['expense', '', 'Children', '🧒'], ['expense', '', 'Family', '👪'], ['expense', '', 'Health', '💊'],
+  ['expense', '', 'Household help', '🧹'], ['expense', '', 'Subscriptions', '📺'], ['expense', '', 'EMI & loans', '💳'],
+  ['expense', '', 'Clothing', '👕'], ['expense', '', 'Transport', '🚌'], ['expense', '', 'Eating out', '🍽️'],
+  ['expense', '', 'Gym', '🏋️'], ['expense', '', 'Hobby', '🎨'], ['expense', '', 'Travel', '✈️'],
+  ['expense', '', 'Gifts & donations', '🤲'], ['expense', '', 'Other', '📦'],
+  ['saving', '', 'General savings', '🏦'], ['saving', '', 'Children’s fund', '🧸'], ['saving', '', 'Emergency fund', '🛟']
+];
+
+const ICONS = {
+  home: '<svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v8a1 1 0 0 1-1 1h-4v-6h-6v6H5a1 1 0 0 1-1-1z"/></svg>',
+  bills: '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16M9 15l2 2 4-4"/></svg>',
+  reports: '<svg viewBox="0 0 24 24"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>',
+  planner: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg>',
+  more: '<svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>'
+};
+
+/* ---------- Small helpers ---------- */
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+const r3 = (n) => Math.round(n * 1000) / 1000;
+const sum = (arr, fn) => r3(arr.reduce((a, x) => a + fn(x), 0));
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+function parseAmount(v) {
+  const n = parseFloat(String(v ?? '').replace(/[\s,](?=\d{3}(\D|$))/g, '').replace(',', '.'));
+  return Number.isFinite(n) ? r3(n) : NaN;
+}
+
+const pad = (n) => String(n).padStart(2, '0');
+const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const toDate = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d || 1); };
+const today = () => iso(new Date());
+const curYM = () => today().slice(0, 7);
+const addDays = (s, n) => { const d = toDate(s); d.setDate(d.getDate() + n); return iso(d); };
+const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(toDate(s).getTime());
+const isYM = (s) => typeof s === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
+function addMonths(ym, n) {
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(y, m - 1 + n, 1);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+}
+const monthsBetween = (a, b) => (b.slice(0, 4) - a.slice(0, 4)) * 12 + (b.slice(5, 7) - a.slice(5, 7));
+const daysInMonth = (ym) => { const [y, m] = ym.split('-').map(Number); return new Date(y, m, 0).getDate(); };
+const dateIn = (ym, day) => `${ym}-${pad(Math.min(Math.max(1, day), daysInMonth(ym)))}`;
+const ymLabel = (ym) => toDate(ym + '-01').toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+const ymShort = (ym) => toDate(ym + '-01').toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+const monthNameOf = (m) => new Date(2024, m - 1, 1).toLocaleDateString(undefined, { month: 'long' });
+const fmtDay = (s) => toDate(s).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+const fmtDayLong = (s) => toDate(s).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+const fmtShort = (s) => toDate(s).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+
+let fmtCache = {};
+function fmt(n) {
+  const cur = state.settings.currency || 'USD';
+  if (!fmtCache[cur]) {
+    try {
+      fmtCache[cur] = new Intl.NumberFormat(undefined, { style: 'currency', currency: cur, currencyDisplay: 'narrowSymbol', minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    } catch (e) { fmtCache[cur] = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }); }
+  }
+  return fmtCache[cur].format(n || 0);
+}
+const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
+const fmtK = (n) => (Math.abs(n) < 10000 ? String(Math.round(n)) : compact.format(n));
+
+/* ---------- State ---------- */
+
+function guessCurrency() {
+  const region = (navigator.language || '').split('-')[1];
+  return REGION_CURRENCY[(region || '').toUpperCase()] || 'BDT';
+}
+
+function defaultCategories() {
+  return DEFAULT_CATEGORIES.map(([type, group, name, emoji]) => ({ id: uid(), type, group: group || 'primary', name, emoji, budget: 0 }));
+}
+
+function blankState() {
+  return {
+    version: 2,
+    settings: { currency: guessCurrency(), theme: 'auto', started: false },
+    categories: [], transactions: [], recurring: [], emis: [], plans: [], debts: []
+  };
+}
+
+const validState = (s) => s && typeof s === 'object' && s.version === 2 && s.settings && typeof s.settings === 'object' && Array.isArray(s.transactions);
+
+// Rebuild stored or imported data field by field, so a damaged or hand-edited file cannot break the app.
+function sanitize(s) {
+  const okId = (v) => typeof v === 'string' && /^[\w-]{1,40}$/.test(v);
+  const ref = (v) => (okId(v) ? v : '');
+  const num = (v) => (Number.isFinite(+v) ? r3(+v) : 0);
+  const pos = (v) => Math.max(0, num(v));
+  const str = (v, n) => String(v ?? '').slice(0, n);
+  const day = (v) => Math.min(31, Math.max(1, Math.round(num(v)) || 1));
+  const arr = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === 'object' && okId(x.id)) : []);
+  const type = (v) => (TYPES.includes(v) ? v : 'expense');
+  const out = blankState();
+  if (/^[A-Z]{3}$/.test(s.settings.currency)) out.settings.currency = s.settings.currency;
+  if (['auto', 'light', 'dark'].includes(s.settings.theme)) out.settings.theme = s.settings.theme;
+  out.settings.started = !!s.settings.started;
+  out.categories = arr(s.categories).map((c) => ({
+    id: c.id, type: type(c.type), group: c.group === 'secondary' ? 'secondary' : 'primary',
+    name: str(c.name, 40) || 'Category', emoji: str(c.emoji, 8), budget: pos(c.budget)
+  }));
+  out.transactions = arr(s.transactions).filter((t) => isDate(t.date)).map((t) => ({
+    id: t.id, type: type(t.type), amount: Math.abs(num(t.amount)), categoryId: ref(t.categoryId), date: t.date,
+    note: str(t.note, 120), created: num(t.created), recurringId: ref(t.recurringId), emiId: ref(t.emiId),
+    planId: ref(t.planId), period: isYM(t.period) ? t.period : ''
+  }));
+  out.recurring = arr(s.recurring).map((r) => ({
+    id: r.id, type: type(r.type), name: str(r.name, 60) || 'Repeating item', amount: pos(r.amount), categoryId: ref(r.categoryId),
+    frequency: r.frequency === 'yearly' ? 'yearly' : 'monthly', day: day(r.day), month: Math.min(12, Math.max(1, Math.round(num(r.month)) || 1)),
+    start: isYM(r.start) ? r.start : curYM(), end: isYM(r.end) ? r.end : '', paused: !!r.paused,
+    skips: Array.isArray(r.skips) ? r.skips.filter(isYM) : [], note: str(r.note, 120)
+  }));
+  out.emis = arr(s.emis).map((e) => {
+    const monthly = pos(e.monthly);
+    // Older entries stored a total and an amount already paid instead of a tenure.
+    const legacy = monthly > 0 ? Math.ceil((pos(e.total) - pos(e.alreadyPaid)) / monthly) : 1;
+    const tenure = Math.min(360, Math.max(1, Math.round(num(e.tenure)) || legacy || 1));
+    return {
+      id: e.id, name: str(e.name, 60) || 'EMI', monthly, tenure, paidBefore: Math.min(tenure, Math.max(0, Math.round(num(e.paidBefore)) || 0)),
+      day: day(e.day), start: isYM(e.start) ? e.start : curYM(), categoryId: ref(e.categoryId), note: str(e.note, 120)
+    };
+  });
+  out.plans = arr(s.plans).map((p) => ({
+    id: p.id, name: str(p.name, 60) || 'Plan', price: pos(p.price), target: isYM(p.target) ? p.target : '',
+    priority: ['high', 'medium', 'low'].includes(p.priority) ? p.priority : 'medium', note: str(p.note, 120), done: !!p.done
+  }));
+  out.debts = arr(s.debts).map((d) => ({
+    id: d.id, kind: d.kind === 'payable' ? 'payable' : 'receivable', person: str(d.person, 60) || 'Someone', amount: pos(d.amount),
+    date: isDate(d.date) ? d.date : today(), due: isDate(d.due) ? d.due : '', note: str(d.note, 120), settled: !!d.settled,
+    payments: arr(d.payments).filter((p) => isDate(p.date)).map((p) => ({ id: p.id, amount: pos(p.amount), date: p.date }))
+  }));
+  return out;
+}
+
+// Carries anything entered in the first version of the app over to the new layout.
+function migrateV1(old) {
+  const s = blankState();
+  if (old.settings && /^[A-Z]{3}$/.test(old.settings.currency)) s.settings.currency = old.settings.currency;
+  s.categories = defaultCategories();
+  const map = {};
+  for (const b of old.budgets || []) {
+    for (const c of b.categories || []) {
+      const type = c.type === 'income' ? 'income' : 'expense';
+      let hit = s.categories.find((x) => x.type === type && x.name.toLowerCase() === String(c.name).toLowerCase());
+      if (!hit) { hit = { id: uid(), type, group: 'primary', name: String(c.name), emoji: String(c.emoji || ''), budget: 0 }; s.categories.push(hit); }
+      map[c.id] = hit.id;
+    }
+  }
+  s.transactions = (old.transactions || []).map((t) => ({ ...t, categoryId: map[t.categoryId] || '' }));
+  s.settings.started = s.transactions.length > 0;
+  return sanitize(s);
+}
+
+function load() {
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    if (validState(s)) return sanitize(s);
+    const old = JSON.parse(localStorage.getItem(OLD_KEY));
+    if (old && Array.isArray(old.budgets) && old.budgets.length) return migrateV1(old);
+  } catch (e) { /* fall through to a fresh state */ }
+  return blankState();
+}
+
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(state)); }
+  catch (e) { toast('Could not save. Storage is full or blocked.'); }
+}
+
+let state = load();
+const ui = {
+  tab: 'home', month: curYM(), filter: 'all', search: '', bar: null, bills: 'month', horizon: 12,
+  rep: { period: 'month', cursor: today(), measure: 'expense' },
+  planner: 'plans'
+};
+let pendingConfirm = null;
+
+/* ---------- Derived data ---------- */
+
+const cat = (id) => state.categories.find((c) => c.id === id) || null;
+const catsOf = (type) => state.categories.filter((c) => c.type === type);
+const catLabel = (c) => (c ? `${c.emoji ? c.emoji + ' ' : ''}${c.name}` : 'Uncategorised');
+
+function totalsOf(list) {
+  const t = { income: 0, expense: 0, saving: 0 };
+  for (const x of list) t[x.type] += x.amount;
+  for (const k of TYPES) t[k] = r3(t[k]);
+  t.balance = r3(t.income - t.expense - t.saving);
+  return t;
+}
+const txInMonth = (ym) => state.transactions.filter((t) => t.date.startsWith(ym));
+
+// An EMI runs for `tenure` months from `start`. Each month is one instalment, paid or still open.
+function emiStats(e) {
+  const pays = state.transactions.filter((t) => t.emiId === e.id);
+  const months = Array.from({ length: e.tenure }, (_, i) => {
+    const ym = addMonths(e.start, i);
+    return { ym, seq: i + 1, before: i < e.paidBefore, tx: pays.find((t) => t.period === ym) || null };
+  });
+  const open = months.filter((m) => !m.before && !m.tx);
+  return { months, open, end: addMonths(e.start, e.tenure - 1), paidCount: e.tenure - open.length,
+    total: r3(e.monthly * e.tenure), left: r3(open.length * e.monthly) };
+}
+
+// Everything that repeats and falls in the given month: repeating items and EMI instalments, each paid or not.
+function dueItems(ym) {
+  const month = Number(ym.slice(5, 7));
+  const items = [];
+  for (const r of state.recurring) {
+    if (r.start > ym || (r.end && ym > r.end)) continue;
+    if (r.frequency === 'yearly' && r.month !== month) continue;
+    const paid = state.transactions.find((t) => t.recurringId === r.id && t.period === ym) || null;
+    if (r.paused && !paid) continue;
+    items.push({ key: 'rec:' + r.id, kind: 'rec', ref: r, name: r.name, type: r.type, amount: r.amount, categoryId: r.categoryId,
+      date: dateIn(ym, r.day), paid, skipped: !paid && r.skips.includes(ym) });
+  }
+  for (const e of state.emis) {
+    const i = monthsBetween(e.start, ym);
+    if (i < e.paidBefore || i >= e.tenure) continue;
+    const paid = state.transactions.find((t) => t.emiId === e.id && t.period === ym) || null;
+    items.push({ key: 'emi:' + e.id, kind: 'emi', ref: e, name: e.name, type: 'expense', amount: e.monthly, categoryId: e.categoryId,
+      date: dateIn(ym, e.day), paid, skipped: false, seq: i + 1 });
+  }
+  return items.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+function dueStatus(it) {
+  if (it.paid) return 'done';
+  if (it.skipped) return 'skipped';
+  return it.date < today() ? 'overdue' : 'pending';
+}
+const isOpen = (it) => !it.paid && !it.skipped;
+
+// Opens the right sheet for one due item: its payment if already paid, otherwise a pre-filled entry for that month.
+function openDue(it, ym) {
+  if (it.paid) return txSheet(it.paid);
+  if (it.skipped) { it.ref.skips = it.ref.skips.filter((m) => m !== ym); save(); render(); return toast('Back on the list'); }
+  const income = it.type === 'income';
+  txSheet(null, { title: `${income ? 'Received' : it.type === 'saving' ? 'Save' : 'Pay'}: ${it.name}`, cta: income ? 'Mark as received' : 'Mark as done',
+    type: it.type, amount: it.amount, categoryId: it.categoryId, note: it.name, date: ym === curYM() ? today() : it.date,
+    recurringId: it.kind === 'rec' ? it.ref.id : '', emiId: it.kind === 'emi' ? it.ref.id : '', period: ym, canSkip: it.kind === 'rec' });
+}
+
+const debtPaid = (d) => sum(d.payments, (p) => p.amount);
+const debtLeft = (d) => (d.settled ? 0 : Math.max(0, r3(d.amount - debtPaid(d))));
+const debtTotal = (kind) => sum(state.debts.filter((d) => d.kind === kind), debtLeft);
+
+/* ---------- Theme, toast, sheets ---------- */
+
+function applyTheme() {
+  const t = state.settings.theme;
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+}
+
+let toastTimer;
+function toast(msg) {
+  const el = $('#toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+}
+
+function openSheet(title, body) {
+  $('#sheet-root').innerHTML = `
+    <div class="backdrop" data-act="close-sheet"></div>
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(title)}">
+      <div class="sheet-head"><h2>${esc(title)}</h2><button class="x" data-act="close-sheet" aria-label="Close">✕</button></div>
+      ${body}
+    </div>`;
+  const focus = $('#sheet-root [data-autofocus]');
+  if (focus) focus.focus();
+}
+function closeSheet() { $('#sheet-root').innerHTML = ''; pendingConfirm = null; }
+
+function confirmSheet(title, message, label, fn) {
+  openSheet(title, `<p>${esc(message)}</p>
+    <button class="btn danger" data-act="confirm-yes">${esc(label)}</button>
+    <button class="btn ghost" data-act="close-sheet">Cancel</button>`);
+  pendingConfirm = fn;
+}
+
+/* ---------- Shared pieces ---------- */
+
+function render() {
+  const app = $('#app');
+  if (!state.settings.started) { app.innerHTML = viewWelcome(); return; }
+  const views = { home: viewHome, bills: viewBills, reports: viewReports, planner: viewPlanner, more: viewMore };
+  const tabs = [['home', 'Home'], ['bills', 'Bills'], ['reports', 'Reports'], ['planner', 'Planner'], ['more', 'More']];
+  const overdue = dueItems(curYM()).filter((it) => dueStatus(it) === 'overdue').length;
+  app.innerHTML = `
+    ${views[ui.tab]()}
+    ${['home', 'bills', 'reports'].includes(ui.tab) ? '<button class="fab" data-act="add-tx" aria-label="Add income, expense or savings">+</button>' : ''}
+    <nav class="tabbar"><div class="tabbar-in">
+      ${tabs.map(([id, label]) => `<button class="tab ${ui.tab === id ? 'on' : ''}" data-act="tab" data-id="${id}" ${ui.tab === id ? 'aria-current="page"' : ''}>
+        ${ICONS[id]}${id === 'bills' && overdue ? `<i class="badge" aria-label="${overdue} overdue">${overdue}</i>` : ''}<span>${label}</span></button>`).join('')}
+    </div></nav>`;
+}
+
+function currencyOptions(selected) {
+  const list = CURRENCIES.includes(selected) ? CURRENCIES : [selected, ...CURRENCIES];
+  return list.map((c) => `<option ${c === selected ? 'selected' : ''}>${esc(c)}</option>`).join('');
+}
+
+function catOptions(type, selected) {
+  const opt = (c) => `<option value="${c.id}" ${c.id === selected ? 'selected' : ''}>${esc(catLabel(c))}</option>`;
+  const cats = catsOf(type);
+  if (!cats.length) return '<option value="">No categories yet</option>';
+  if (type !== 'income') return cats.map(opt).join('');
+  return ['primary', 'secondary'].map((g) => {
+    const list = cats.filter((c) => c.group === g);
+    return list.length ? `<optgroup label="${g === 'primary' ? 'Primary income' : 'Secondary income'}">${list.map(opt).join('')}</optgroup>` : '';
+  }).join('');
+}
+
+function segButtons(act, options, current) {
+  return `<div class="seg" style="grid-template-columns:repeat(${options.length},1fr)">${options.map(([v, l]) =>
+    `<button type="button" class="${v === current ? 'on' : ''}" data-act="${act}" data-id="${v}" aria-pressed="${v === current}">${l}</button>`).join('')}</div>`;
+}
+
+function monthNav(ym, act) {
+  return `<div class="month-nav">
+    <button class="nav-btn" data-act="${act}" data-d="-1" aria-label="Previous">‹</button>
+    <div class="month-title">${ymLabel(ym)}</div>
+    <button class="nav-btn" data-act="${act}" data-d="1" aria-label="Next">›</button>
+  </div>`;
+}
+
+function txRow(t) {
+  const c = cat(t.categoryId);
+  const title = t.note || (c ? c.name : 'Uncategorised');
+  const tags = [t.type === 'saving' ? 'Savings' : '', t.note && c ? c.name : '', t.emiId ? 'EMI' : t.recurringId ? 'Repeating' : ''].filter(Boolean).join(' · ');
+  return `<button class="row" data-act="edit-tx" data-id="${t.id}">
+    <span class="emoji" aria-hidden="true">${esc((c && c.emoji) || (t.type === 'income' ? '💰' : t.type === 'saving' ? '🏦' : '•'))}</span>
+    <span class="row-main">
+      <span class="row-top"><span class="name">${esc(title)}</span>
+        <span class="amt ${t.type === 'income' ? 'inc' : ''}">${t.type === 'income' ? '+' : '−'}${fmt(t.amount)}</span></span>
+      ${tags ? `<span class="row-sub">${esc(tags)}</span>` : ''}
+    </span></button>`;
+}
+
+const sortedTx = (list) => [...list].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (b.created || 0) - (a.created || 0)));
+
+function txGroups(list, emptyText) {
+  if (!list.length) return `<div class="list"><div class="empty">${emptyText}</div></div>`;
+  const days = [];
+  for (const t of sortedTx(list)) {
+    if (!days.length || days[days.length - 1].date !== t.date) days.push({ date: t.date, items: [] });
+    days[days.length - 1].items.push(t);
+  }
+  return days.map((d) => {
+    const net = sum(d.items, (t) => (t.type === 'income' ? t.amount : -t.amount));
+    return `<div class="day-head"><span>${fmtDay(d.date)}</span><span>${net > 0 ? '+' : net < 0 ? '−' : ''}${fmt(Math.abs(net))}</span></div>
+      <div class="list">${d.items.map(txRow).join('')}</div>`;
+  }).join('');
+}
+
+/* ---------- Welcome ---------- */
+
+function viewWelcome() {
+  return `<div class="welcome">
+    <h1>Budget Nest</h1>
+    <p>Your family’s income, expenses, savings, bills, EMIs, plans and money owed, all in one place. Everything stays on this phone.</p>
+    <form data-form="onboard" novalidate>
+      <label class="field"><span>Currency</span><select name="currency">${currencyOptions(state.settings.currency)}</select></label>
+      <p class="note" style="margin-top:0">You start with ready-made categories such as Job salary, House, Children and Gym. You can rename, add or remove any of them later under More.</p>
+      <button class="btn">Get started</button>
+    </form>
+  </div>`;
+}
+
+/* ---------- Home ---------- */
+
+function homeListHtml() {
+  const q = ui.search.trim().toLowerCase();
+  const list = txInMonth(ui.month).filter((t) => (ui.filter === 'all' || t.type === ui.filter)
+    && (!q || t.note.toLowerCase().includes(q) || ((cat(t.categoryId) || {}).name || '').toLowerCase().includes(q)));
+  return txGroups(list, q || ui.filter !== 'all' ? 'Nothing matches.' : 'Nothing recorded for this month yet. Tap + to add income, an expense or savings.');
+}
+
+function viewHome() {
+  const ym = ui.month;
+  const t = totalsOf(txInMonth(ym));
+  const open = dueItems(ym).filter(isOpen);
+  const openOut = sum(open.filter((it) => it.type !== 'income'), (it) => it.amount);
+  const openIn = sum(open.filter((it) => it.type === 'income'), (it) => it.amount);
+  const isNow = ym === curYM();
+  const after = r3(t.balance - openOut);
+  const daysLeft = daysInMonth(ym) - Number(today().slice(8, 10)) + 1;
+  const recv = debtTotal('receivable');
+  const pay = debtTotal('payable');
+
+  let dueCard = '';
+  if (open.length) {
+    const bits = [];
+    if (openOut) bits.push(`${fmt(openOut)} still to pay`);
+    if (openIn) bits.push(`${fmt(openIn)} income expected`);
+    dueCard = `<button class="card tap" data-act="open-bills">
+      <div class="row-top"><span class="name">${plural(open.length, 'item')} pending this month</span><span class="chev-r">›</span></div>
+      <div class="sub">${bits.join(' · ')}</div>
+      ${isNow && openOut ? `<div class="sub">After paying them: <b class="${after < 0 ? 'over' : ''}">${fmt(after)}</b>${after > 0 ? ` · about ${fmt(Math.floor(after / daysLeft))} a day for ${plural(daysLeft, 'day')}` : ''}</div>` : ''}
+    </button>`;
+  }
+
+  return `<header class="top">
+      ${monthNav(ym, 'month')}
+      ${isNow ? '' : '<button class="link center" data-act="month-now">Back to this month</button>'}
+    </header>
+    <section class="card">
+      <div class="label">Left this month</div>
+      <div class="hero-num ${t.balance < 0 ? 'neg' : ''}">${fmt(t.balance)}</div>
+      <div class="sub">Income minus expenses and savings</div>
+      <div class="kpis three" style="margin-top:14px">
+        <div class="kpi"><div class="label">Income</div><div class="v">${fmt(t.income)}</div></div>
+        <div class="kpi"><div class="label">Expenses</div><div class="v">${fmt(t.expense)}</div></div>
+        <div class="kpi"><div class="label">Savings</div><div class="v">${fmt(t.saving)}</div></div>
+      </div>
+    </section>
+    ${dueCard}
+    ${recv || pay ? `<button class="card tap" data-act="open-owed">
+      <div class="kpis" style="margin:0;padding:0;border:0">
+        <div class="kpi"><div class="label">Receivable</div><div class="v">${fmt(recv)}</div></div>
+        <div class="kpi"><div class="label">Payable</div><div class="v">${fmt(pay)}</div></div>
+      </div></button>` : ''}
+    <div class="sec-head"><h2>Transactions</h2></div>
+    ${segButtons('filter', [['all', 'All'], ['expense', 'Expenses'], ['income', 'Income'], ['saving', 'Savings']], ui.filter)}
+    <input type="search" id="tx-search" placeholder="Search" value="${esc(ui.search)}" aria-label="Search this month’s transactions">
+    <div id="tx-list">${homeListHtml()}</div>`;
+}
+
+/* ---------- Bills ---------- */
+
+function dueRow(it) {
+  const st = dueStatus(it);
+  const c = cat(it.categoryId);
+  const pill = { done: '✓ Done', pending: 'Pending', overdue: '⚠ Overdue', skipped: 'Skipped' }[st];
+  const when = it.paid ? `${it.type === 'income' ? 'Received' : 'Paid'} ${fmtShort(it.paid.date)}` : st === 'skipped' ? 'Not this month' : `Due ${fmtShort(it.date)}`;
+  return `<button class="row" data-act="due" data-key="${it.key}">
+    <span class="emoji" aria-hidden="true">${esc((c && c.emoji) || '•')}</span>
+    <span class="row-main">
+      <span class="row-top"><span class="name">${esc(it.name)}</span><span class="amt">${fmt(it.paid ? it.paid.amount : it.amount)}</span></span>
+      <span class="row-top"><span class="row-sub">${when}${it.kind === 'emi' ? ` · EMI ${it.seq} of ${it.ref.tenure}` : it.ref.frequency === 'yearly' ? ' · yearly' : ''}</span><span class="pill ${st}">${pill}</span></span>
+    </span></button>`;
+}
+
+function emiRow(e) {
+  const st = emiStats(e);
+  return `<button class="row" data-act="open-emi" data-id="${e.id}">
+    <span class="row-main">
+      <span class="row-top"><span class="name">${esc(e.name)}</span><span class="amt">${fmt(e.monthly)}<span class="of"> a month</span></span></span>
+      <span class="meter"><span style="width:${(st.paidCount / e.tenure) * 100}%"></span></span>
+      <span class="row-sub">${st.open.length ? `${st.paidCount} of ${e.tenure} paid · ${fmt(st.left)} left · ends ${ymShort(st.end)}` : `✓ All ${e.tenure} instalments paid`}</span>
+    </span></button>`;
+}
+
+function recurLine(r) {
+  const when = r.frequency === 'yearly' ? `every year on ${r.day} ${monthNameOf(r.month)}` : `every month on day ${r.day}`;
+  return `${fmt(r.amount)} · ${when}${r.paused ? ' · paused' : ''}`;
+}
+
+function billsHead() {
+  return segButtons('bills', [['month', 'This month'], ['emi', 'EMI'], ['upcoming', 'Upcoming']], ui.bills);
+}
+
+function viewBills() {
+  return ui.bills === 'emi' ? viewEmi() : ui.bills === 'upcoming' ? viewUpcoming() : viewBillsMonth();
+}
+
+function viewBillsMonth() {
+  const ym = ui.month;
+  const items = dueItems(ym);
+  const out = items.filter((it) => it.type !== 'income');
+  const inc = items.filter((it) => it.type === 'income');
+  const paidCount = out.filter((it) => it.paid).length;
+  const openOut = sum(out.filter(isOpen), (it) => it.amount);
+  const yearly = state.recurring.filter((r) => r.frequency === 'yearly' && !r.paused && r.type !== 'income');
+  const setAside = sum(yearly, (r) => r.amount / 12);
+
+  return `<header class="top"><h1>Bills</h1></header>
+    ${billsHead()}
+    ${monthNav(ym, 'month')}
+    ${ym === curYM() ? '' : '<button class="link center" data-act="month-now">Back to this month</button>'}
+    <div class="sec-head"><h2>To pay</h2><span class="sub">${out.length ? `${paidCount} of ${out.length} done · ${fmt(openOut)} left` : ''}</span></div>
+    <div class="list">${out.length ? out.map(dueRow).join('') : '<div class="empty">No repeating expenses or EMIs fall in this month. Add your rent, school fee, bills and subscriptions below and they will show up here every month.</div>'}</div>
+    ${inc.length ? `<div class="sec-head"><h2>Expected income</h2></div><div class="list">${inc.map(dueRow).join('')}</div>` : ''}
+
+    <div class="sec-head"><h2>Repeating items</h2><button class="link" data-act="add-rec">+ Add</button></div>
+    <div class="list">${state.recurring.length ? state.recurring.map((r) => `<button class="row" data-act="edit-rec" data-id="${r.id}">
+        <span class="emoji" aria-hidden="true">${esc((cat(r.categoryId) || {}).emoji || '•')}</span>
+        <span class="row-main"><span class="row-top"><span class="name">${esc(r.name)}</span><span class="pill">${TYPE_LABEL[r.type]}</span></span>
+        <span class="row-sub">${recurLine(r)}</span></span></button>`).join('')
+      : '<div class="empty">Nothing repeating yet.</div>'}</div>
+    ${setAside ? `<p class="note" style="margin-top:10px">Your yearly items add up to ${fmt(sum(yearly, (r) => r.amount))}. Setting aside about ${fmt(Math.ceil(setAside))} a month covers them.</p>` : ''}`;
+}
+
+function viewEmi() {
+  const now = curYM();
+  const stats = state.emis.map((e) => ({ e, st: emiStats(e) }));
+  const running = stats.filter((x) => x.st.open.length);
+  const finished = stats.filter((x) => !x.st.open.length);
+  const thisMonth = sum(dueItems(now).filter((it) => it.kind === 'emi'), (it) => it.amount);
+  const lastEnd = running.map((x) => x.st.end).sort().pop();
+  return `<header class="top"><h1>Bills</h1></header>
+    ${billsHead()}
+    <section class="card">
+      <div class="label">EMI still to pay</div>
+      <div class="hero-num small">${fmt(sum(running, (x) => x.st.left))}</div>
+      <div class="sub">${running.length ? `${fmt(thisMonth)} this month · ${plural(running.length, 'EMI')} running · all clear after ${ymShort(lastEnd)}` : 'No EMI running'}</div>
+    </section>
+    <div class="sec-head"><h2>Running</h2><button class="link" data-act="add-emi">+ Add EMI</button></div>
+    <div class="list">${running.length ? running.map((x) => emiRow(x.e)).join('') : '<div class="empty">Add a phone, laptop, AC or loan paid in monthly instalments. Choose the tenure and it repeats in Bills every month until the last instalment.</div>'}</div>
+    ${finished.length ? `<div class="sec-head"><h2>Finished</h2></div><div class="list">${finished.map((x) => emiRow(x.e)).join('')}</div>` : ''}`;
+}
+
+// Preset expenses for each coming month: repeating expenses, savings and EMI instalments.
+function viewUpcoming() {
+  const months = Array.from({ length: ui.horizon }, (_, i) => addMonths(curYM(), i + 1)).map((ym) => {
+    const items = dueItems(ym).filter((it) => !it.skipped);
+    const out = items.filter((it) => it.type !== 'income');
+    return { ym, out, total: sum(out, (it) => (it.paid ? it.paid.amount : it.amount)), income: sum(items.filter((it) => it.type === 'income'), (it) => it.amount) };
+  });
+  const grand = sum(months, (m) => m.total);
+  const peak = months.reduce((a, m) => (m.total > a.total ? m : a), months[0]);
+  return `<header class="top"><h1>Bills</h1></header>
+    ${billsHead()}
+    <section class="card">
+      <div class="label">Preset expenses, next ${ui.horizon} months</div>
+      <div class="hero-num small">${fmt(grand)}</div>
+      <div class="sub">${grand ? `About ${fmt(Math.round(grand / ui.horizon))} a month · highest in ${ymShort(peak.ym)} (${fmt(peak.total)})` : 'Nothing preset yet. Add repeating items and EMIs to see them here.'}</div>
+    </section>
+    ${segButtons('horizon', [['6', '6 months'], ['12', '12 months'], ['24', '24 months']], String(ui.horizon))}
+    ${months.map((m) => `<div class="sec-head"><h2>${ymLabel(m.ym)}</h2><button class="link" data-act="goto-month" data-id="${m.ym}">Open</button></div>
+      <div class="list">
+        ${m.out.length ? m.out.map((it) => `<div class="row">
+          <span class="emoji" aria-hidden="true">${esc((cat(it.categoryId) || {}).emoji || '•')}</span>
+          <span class="row-main"><span class="row-top"><span class="name">${esc(it.name)}</span><span class="amt">${fmt(it.paid ? it.paid.amount : it.amount)}</span></span>
+          <span class="row-sub">${it.paid ? '✓ Already paid' : `Due ${fmtShort(it.date)}`}${it.kind === 'emi' ? ` · EMI ${it.seq} of ${it.ref.tenure}` : it.type === 'saving' ? ' · savings' : it.ref.frequency === 'yearly' ? ' · yearly' : ''}</span></span></div>`).join('')
+          : '<div class="empty">Nothing preset for this month.</div>'}
+        ${m.out.length ? `<div class="row total"><span class="row-main"><span class="row-top"><span class="name">Total · ${plural(m.out.length, 'item')}</span><span class="amt">${fmt(m.total)}</span></span>
+          ${m.income ? `<span class="row-sub">Expected income ${fmt(m.income)} · ${fmt(m.income - m.total)} left after these</span>` : ''}</span></div>` : ''}
+      </div>`).join('')}
+    <section class="card" style="margin-top:20px"><div class="row-top"><span class="name">Total for ${ui.horizon} months</span><span class="amt">${fmt(grand)}</span></div></section>`;
+}
+
+/* ---------- Reports ---------- */
+
+function niceMax(v) {
+  if (v <= 0) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 5, 10]) if (v <= m * p) return m * p;
+  return 10 * p;
+}
+
+function repScope() {
+  const { period, cursor } = ui.rep;
+  const prefix = cursor.slice(0, { day: 10, month: 7, year: 4 }[period]);
+  const label = period === 'day' ? fmtDayLong(cursor) : period === 'month' ? ymLabel(prefix) : prefix;
+  return { period, prefix, label, list: state.transactions.filter((t) => t.date.startsWith(prefix)) };
+}
+
+function rankRows(list, measure, period) {
+  const sums = {};
+  for (const t of list) { const k = cat(t.categoryId) ? t.categoryId : ''; sums[k] = r3((sums[k] || 0) + t.amount); }
+  const rows = Object.entries(sums).map(([id, v]) => ({ id, c: cat(id), v })).sort((a, z) => z.v - a.v);
+  const total = sum(rows, (x) => x.v);
+  const top = rows.length ? rows[0].v : 0;
+  if (!rows.length) return `<div class="empty">No ${TYPE_PLURAL[measure].toLowerCase()} recorded in this period.</div>`;
+  return `<div class="rank">${rows.map(({ id, c, v }) => {
+    const budget = measure === 'expense' && c && c.budget > 0 ? c.budget * (period === 'year' ? 12 : 1) : 0;
+    const over = period !== 'day' && budget > 0 && v > budget;
+    return `<button class="rank-row" data-act="rep-cat" data-id="${id}">
+      <span class="row-top"><span class="name">${esc(catLabel(c))}</span>
+        <span class="amt">${fmt(v)}<span class="share">${Math.round((v / total) * 100)}%</span></span></span>
+      <span class="rank-bar" style="width:${(v / top) * 100}%"></span>
+      ${measure === 'income' && c ? `<span class="row-sub">${c.group === 'secondary' ? 'Secondary' : 'Primary'} income</span>` : ''}
+      ${period !== 'day' && budget > 0 ? `<span class="row-sub">${over ? `<span class="over">⚠ Over the ${fmt(budget)} limit by ${fmt(v - budget)}</span>` : `${fmt(budget - v)} left of the ${fmt(budget)} limit`}</span>` : ''}
+    </button>`;
+  }).join('')}</div>`;
+}
+
+function viewReports() {
+  const { period, prefix, label, list } = repScope();
+  const measure = ui.rep.measure;
+  const t = totalsOf(list);
+  const mlist = list.filter((x) => x.type === measure);
+  const rate = t.income > 0 ? Math.round((t.saving / t.income) * 100) : 0;
+
+  let buckets = [];
+  if (period === 'month') {
+    buckets = Array.from({ length: daysInMonth(prefix) }, (_, i) => ({ key: `${prefix}-${pad(i + 1)}`, label: fmtDay(`${prefix}-${pad(i + 1)}`), value: 0 }));
+  } else if (period === 'year') {
+    buckets = Array.from({ length: 12 }, (_, i) => ({ key: `${prefix}-${pad(i + 1)}`, label: ymLabel(`${prefix}-${pad(i + 1)}`), value: 0 }));
+  }
+  for (const b of buckets) b.value = sum(mlist.filter((x) => x.date.startsWith(b.key)), (x) => x.amount);
+  const max = niceMax(Math.max(0, ...buckets.map((b) => b.value)));
+  const sel = ui.bar != null && buckets[ui.bar] ? buckets[ui.bar] : null;
+
+  let split = '';
+  if (measure === 'income' && t.income > 0) {
+    const sec = sum(mlist.filter((x) => (cat(x.categoryId) || {}).group === 'secondary'), (x) => x.amount);
+    split = `<div class="kpis" style="margin:0 0 16px;padding:0 0 14px;border-top:0;border-bottom:1px solid var(--line)">
+      <div class="kpi"><div class="label">Primary income</div><div class="v">${fmt(t.income - sec)}</div></div>
+      <div class="kpi"><div class="label">Secondary income</div><div class="v">${fmt(sec)}</div></div></div>`;
+  }
+
+  let yearTable = '';
+  if (period === 'year') {
+    const rows = Array.from({ length: 12 }, (_, i) => `${prefix}-${pad(i + 1)}`).map((ym) => ({ ym, t: totalsOf(list.filter((x) => x.date.startsWith(ym))) }))
+      .filter((r) => r.t.income || r.t.expense || r.t.saving);
+    yearTable = `<section class="card"><div class="sec-head" style="margin-top:0"><h2>Month by month</h2></div>
+      ${rows.length ? `<table class="tbl"><thead><tr><th>Month</th><th>In</th><th>Out</th><th>Saved</th><th>Left</th></tr></thead><tbody>
+        ${rows.map((r) => `<tr data-act="rep-goto" data-id="${r.ym}-01"><td>${toDate(r.ym + '-01').toLocaleDateString(undefined, { month: 'short' })}</td>
+          <td>${fmtK(r.t.income)}</td><td>${fmtK(r.t.expense)}</td><td>${fmtK(r.t.saving)}</td><td class="${r.t.balance < 0 ? 'over' : ''}">${fmtK(r.t.balance)}</td></tr>`).join('')}
+        </tbody></table><p class="note" style="margin:10px 0 0">Tap a month to open it.</p>` : '<div class="empty">Nothing recorded this year.</div>'}
+    </section>`;
+  }
+
+  return `<header class="top"><h1>Reports</h1></header>
+    ${segButtons('rep-period', [['day', 'Day'], ['month', 'Month'], ['year', 'Year']], period)}
+    <div class="month-nav">
+      <button class="nav-btn" data-act="rep-nav" data-d="-1" aria-label="Previous">‹</button>
+      <div class="month-title small">${label}</div>
+      <button class="nav-btn" data-act="rep-nav" data-d="1" aria-label="Next">›</button>
+    </div>
+    <section class="card">
+      <div class="kpis" style="margin:0;padding:0;border:0">
+        <div class="kpi"><div class="label">Income</div><div class="v">${fmt(t.income)}</div></div>
+        <div class="kpi"><div class="label">Expenses</div><div class="v">${fmt(t.expense)}</div></div>
+        <div class="kpi"><div class="label">Savings</div><div class="v">${fmt(t.saving)}</div>${rate ? `<div class="s">${rate}% of income</div>` : ''}</div>
+        <div class="kpi"><div class="label">Left</div><div class="v ${t.balance < 0 ? 'over' : ''}">${fmt(t.balance)}</div></div>
+      </div>
+    </section>
+    ${segButtons('rep-measure', [['expense', 'Expenses'], ['income', 'Income'], ['saving', 'Savings']], measure)}
+    ${buckets.length ? `<section class="card">
+      <div class="sec-head" style="margin-top:0"><h2>${TYPE_PLURAL[measure]} per ${period === 'month' ? 'day' : 'month'}</h2></div>
+      <div class="readout">${sel ? `<b>${fmt(sel.value)}</b> · ${esc(sel.label)}` : 'Tap a bar to see the amount.'}</div>
+      <div class="chart" role="img" aria-label="${TYPE_PLURAL[measure]} over ${esc(label)}">
+        <div class="grid-line" style="top:0"><span>${fmt(max)}</span></div>
+        <div class="grid-line" style="top:50%"><span>${fmt(max / 2)}</span></div>
+        <div class="cols">${buckets.map((b, i) => `<button class="col ${ui.bar === i ? 'sel' : ''}" data-act="bar" data-id="${i}" aria-label="${esc(b.label)}: ${esc(fmt(b.value))}"><span style="height:${(b.value / max) * 100}%"></span></button>`).join('')}</div>
+      </div>
+      <div class="x-axis"><span>${period === 'month' ? '1' : monthNameOf(1).slice(0, 3)}</span><span>${period === 'month' ? buckets.length : monthNameOf(12).slice(0, 3)}</span></div>
+    </section>` : ''}
+    <section class="card">
+      <div class="sec-head" style="margin-top:0"><h2>${TYPE_PLURAL[measure]} by category</h2></div>
+      ${split}${rankRows(mlist, measure, period)}
+    </section>
+    ${yearTable}
+    ${period === 'day' ? `<div class="sec-head"><h2>That day</h2></div>${txGroups(list, 'Nothing recorded on this day.')}` : ''}`;
+}
+
+/* ---------- Planner: plans, receivable, payable ---------- */
+
+function planRow(p) {
+  const months = p.target ? monthsBetween(curYM(), p.target) : null;
+  let sub = p.done ? '✓ Done' : p.target ? `By ${ymShort(p.target)}` : 'No date set';
+  if (!p.done && months != null) sub += months > 0 ? ` · save ${fmt(Math.ceil(p.price / months))} a month` : months === 0 ? ' · due this month' : ' · date has passed';
+  return `<button class="row" data-act="edit-plan" data-id="${p.id}">
+    <span class="row-main"><span class="row-top"><span class="name">${esc(p.name)}</span><span class="amt">${fmt(p.price)}</span></span>
+    <span class="row-top"><span class="row-sub">${sub}${p.note ? ' · ' + esc(p.note) : ''}</span>${p.done ? '' : `<span class="pill">${p.priority[0].toUpperCase() + p.priority.slice(1)}</span>`}</span>
+    </span></button>`;
+}
+
+function debtRow(d) {
+  const left = debtLeft(d);
+  const late = !d.settled && d.due && d.due < today();
+  const sub = d.settled ? '✓ Settled' : `${fmt(left)} left${d.due ? ` · due ${fmtShort(d.due)}` : ''}`;
+  return `<button class="row" data-act="open-debt" data-id="${d.id}">
+    <span class="row-main"><span class="row-top"><span class="name">${esc(d.person)}</span><span class="amt">${fmt(d.settled ? d.amount : left)}${!d.settled && left !== d.amount ? `<span class="of"> / ${fmt(d.amount)}</span>` : ''}</span></span>
+    <span class="row-top"><span class="row-sub">${sub}${d.note ? ' · ' + esc(d.note) : ''}</span>${late ? '<span class="pill overdue">⚠ Overdue</span>' : ''}</span>
+    </span></button>`;
+}
+
+function viewPlanner() {
+  const tab = ui.planner;
+  let body;
+  if (tab === 'plans') {
+    const order = { high: 0, medium: 1, low: 2 };
+    const open = state.plans.filter((p) => !p.done).sort((a, b) => order[a.priority] - order[b.priority] || (a.target || '9999') .localeCompare(b.target || '9999'));
+    const done = state.plans.filter((p) => p.done);
+    body = `<section class="card"><div class="label">Planned spending</div><div class="hero-num small">${fmt(sum(open, (p) => p.price))}</div>
+        <div class="sub">${plural(open.length, 'plan')} waiting</div></section>
+      <div class="sec-head"><h2>Plans</h2><button class="link" data-act="add-plan">+ Add plan</button></div>
+      <div class="list">${open.length ? open.map(planRow).join('') : '<div class="empty">Things you want to buy or do later, such as a phone next year or a family trip.</div>'}</div>
+      ${done.length ? `<div class="sec-head"><h2>Done</h2></div><div class="list">${done.map(planRow).join('')}</div>` : ''}`;
+  } else {
+    const list = state.debts.filter((d) => d.kind === tab);
+    const open = list.filter((d) => !d.settled);
+    const closed = list.filter((d) => d.settled);
+    const recv = tab === 'receivable';
+    body = `<section class="card"><div class="label">${recv ? 'People owe you' : 'You owe'}</div><div class="hero-num small">${fmt(debtTotal(tab))}</div>
+        <div class="sub">${plural(open.length, 'open item')}</div></section>
+      <div class="sec-head"><h2>${recv ? 'Receivable' : 'Payable'}</h2><button class="link" data-act="add-debt">+ Add</button></div>
+      <div class="list">${open.length ? open.map(debtRow).join('') : `<div class="empty">${recv ? 'Money someone owes you, such as a loan to a friend or unpaid salary.' : 'Money you owe, such as a loan from family or a credit card balance.'}</div>`}</div>
+      ${closed.length ? `<div class="sec-head"><h2>Settled</h2></div><div class="list">${closed.map(debtRow).join('')}</div>` : ''}`;
+  }
+  return `<header class="top"><h1>Planner</h1></header>
+    ${segButtons('planner', [['plans', 'Plans'], ['receivable', 'Receivable'], ['payable', 'Payable']], tab)}
+    ${body}`;
+}
+
+/* ---------- More: categories, settings, data ---------- */
+
+function viewMore() {
+  const th = state.settings.theme;
+  const catList = (title, list, type, group) => `<div class="sec-head"><h2>${title}</h2><button class="link" data-act="add-cat" data-type="${type}" data-group="${group || ''}">+ Add</button></div>
+    <div class="list">${list.length ? list.map((c) => `<button class="row" data-act="edit-cat" data-id="${c.id}">
+      <span class="emoji" aria-hidden="true">${esc(c.emoji || '•')}</span>
+      <span class="row-main"><span class="row-top"><span class="name">${esc(c.name)}</span>${c.budget ? `<span class="row-sub">limit ${fmt(c.budget)}/month</span>` : ''}</span></span></button>`).join('')
+      : '<div class="empty">None yet.</div>'}</div>`;
+  const inc = catsOf('income');
+  return `<header class="top"><h1>More</h1></header>
+    ${catList('Primary income sources', inc.filter((c) => c.group === 'primary'), 'income', 'primary')}
+    ${catList('Secondary income sources', inc.filter((c) => c.group === 'secondary'), 'income', 'secondary')}
+    ${catList('Expense categories', catsOf('expense'), 'expense')}
+    ${catList('Savings funds', catsOf('saving'), 'saving')}
+
+    <div class="sec-head"><h2>Settings</h2></div>
+    <section class="card">
+      <label class="field"><span>Currency</span><select data-setting="currency">${currencyOptions(state.settings.currency)}</select></label>
+      <label class="field" style="margin-bottom:0"><span>Appearance</span><select data-setting="theme">
+        ${[['auto', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => `<option value="${v}" ${th === v ? 'selected' : ''}>${l}</option>`).join('')}
+      </select></label>
+    </section>
+    <div class="sec-head"><h2>Your data</h2></div>
+    <section class="card">
+      <p class="note" style="margin:0 0 14px">Everything lives only on this device. Save a backup now and then, because clearing Safari website data or deleting the app icon removes it.</p>
+      <button class="btn" data-act="backup">Save a backup file</button>
+      <label class="btn ghost" style="text-align:center;margin-top:10px">Restore from a backup<input type="file" id="restore-file" accept="application/json,.json" class="hidden"></label>
+      <button class="btn ghost" data-act="export-csv">Export transactions (CSV)</button>
+      <button class="btn danger" data-act="erase">Erase everything</button>
+    </section>
+    <div class="sec-head"><h2>Put it on your home screen</h2></div>
+    <section class="card"><p class="note" style="margin:0">In Safari, tap the Share button, then “Add to Home Screen”. The app then opens full screen and works without internet.</p></section>
+    <p class="note" style="text-align:center">Budget Nest · ${plural(state.transactions.length, 'transaction')}</p>`;
+}
+
+/* ---------- Sheets ---------- */
+
+const NOTE_LABEL = { expense: 'What was it for?', income: 'Where did it come from?', saving: 'Note (optional)' };
+const NOTE_HINT = { expense: 'House rent, school fee…', income: 'Client name, who gave it…', saving: '' };
+
+function typeRadios(current, types = TYPES) {
+  return `<div class="seg" role="radiogroup" aria-label="Type" style="grid-template-columns:repeat(${types.length},1fr)">
+    ${types.map((v) => `<label><input type="radio" name="type" value="${v}" ${v === current ? 'checked' : ''}><span>${TYPE_LABEL[v]}</span></label>`).join('')}</div>`;
+}
+
+function txSheet(tx, preset = {}) {
+  const v = tx || preset;
+  const type = v.type || 'expense';
+  const linked = !!(v.recurringId || v.emiId);
+  const date = tx ? tx.date : preset.date || (ui.month === curYM() || ui.tab !== 'home' ? today() : ui.month + '-01');
+  const hidden = ['recurringId', 'emiId', 'planId', 'period'].map((k) => `<input type="hidden" name="${k}" value="${esc(v[k] || '')}">`).join('');
+  openSheet(preset.title || (tx ? 'Edit' : 'Add'), `
+    <form data-form="tx" novalidate>
+      <input type="hidden" name="id" value="${tx ? tx.id : ''}">${hidden}
+      ${linked ? `<input type="hidden" name="type" value="${type}">` : typeRadios(type)}
+      <label class="field"><span>Amount</span>
+        <input class="amount-input" type="text" inputmode="decimal" name="amount" placeholder="0" autocomplete="off" value="${v.amount || ''}" ${tx || v.amount ? '' : 'data-autofocus'}></label>
+      <label class="field"><span data-note-label>${NOTE_LABEL[type]}</span>
+        <input type="text" name="note" maxlength="120" autocomplete="off" placeholder="${NOTE_HINT[type]}" value="${esc(v.note || '')}"></label>
+      <div class="two">
+        <label class="field"><span>Category</span><select name="categoryId">${catOptions(type, v.categoryId)}</select></label>
+        <label class="field"><span>Date</span><input type="date" name="date" value="${date}"></label>
+      </div>
+      <button class="btn">${tx ? 'Save changes' : preset.cta || 'Add'}</button>
+      ${!tx && preset.canSkip ? `<button type="button" class="btn ghost" data-act="skip-due" data-id="${v.recurringId}" data-period="${v.period}">Skip this month</button>` : ''}
+      ${tx ? `<button type="button" class="btn danger" data-act="del-tx" data-id="${tx.id}">Delete</button>` : ''}
+    </form>`);
+}
+
+function catSheet(c, type, group) {
+  const kind = c ? c.type : type;
+  const title = { expense: 'expense category', income: 'income source', saving: 'savings fund' }[kind];
+  openSheet(c ? `Edit ${title}` : `New ${title}`, `
+    <form data-form="cat" novalidate>
+      <input type="hidden" name="id" value="${c ? c.id : ''}"><input type="hidden" name="type" value="${kind}">
+      <div class="two" style="grid-template-columns:1fr 84px">
+        <label class="field"><span>Name</span><input type="text" name="name" maxlength="40" autocomplete="off" value="${esc(c ? c.name : '')}" ${c ? '' : 'data-autofocus'}></label>
+        <label class="field"><span>Emoji</span><input type="text" name="emoji" maxlength="8" autocomplete="off" value="${esc(c ? c.emoji : '')}" style="text-align:center"></label>
+      </div>
+      ${kind === 'income' ? `<label class="field"><span>Kind of income</span><select name="group">
+        <option value="primary" ${(c ? c.group : group) !== 'secondary' ? 'selected' : ''}>Primary (salary, business, rent)</option>
+        <option value="secondary" ${(c ? c.group : group) === 'secondary' ? 'selected' : ''}>Secondary (side hustle, bonus, gifts)</option></select></label>` : ''}
+      ${kind === 'expense' ? `<label class="field"><span>Monthly limit (optional)</span>
+        <input type="text" inputmode="decimal" name="budget" placeholder="No limit" autocomplete="off" value="${c && c.budget ? c.budget : ''}"></label>` : ''}
+      <button class="btn">${c ? 'Save changes' : 'Add'}</button>
+      ${c ? `<button type="button" class="btn danger" data-act="del-cat" data-id="${c.id}">Delete</button>` : ''}
+    </form>`);
+}
+
+function recSheet(r) {
+  const type = r ? r.type : 'expense';
+  const freq = r ? r.frequency : 'monthly';
+  openSheet(r ? 'Edit repeating item' : 'New repeating item', `
+    <form data-form="rec" novalidate>
+      <input type="hidden" name="id" value="${r ? r.id : ''}">
+      ${typeRadios(type)}
+      <label class="field"><span>Name</span><input type="text" name="name" maxlength="60" autocomplete="off" placeholder="House rent, school fee, salary…" value="${esc(r ? r.name : '')}" ${r ? '' : 'data-autofocus'}></label>
+      <div class="two">
+        <label class="field"><span>Amount</span><input type="text" inputmode="decimal" name="amount" placeholder="0" autocomplete="off" value="${r ? r.amount : ''}"></label>
+        <label class="field"><span>Category</span><select name="categoryId">${catOptions(type, r && r.categoryId)}</select></label>
+      </div>
+      <div class="two">
+        <label class="field"><span>Repeats</span><select name="frequency">
+          <option value="monthly" ${freq === 'monthly' ? 'selected' : ''}>Every month</option>
+          <option value="yearly" ${freq === 'yearly' ? 'selected' : ''}>Every year</option></select></label>
+        <label class="field"><span>Day of the month</span><input type="text" inputmode="numeric" name="day" autocomplete="off" value="${r ? r.day : 1}"></label>
+      </div>
+      <label class="field ${freq === 'yearly' ? '' : 'hidden'}" data-month-wrap><span>Month</span><select name="month">
+        ${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}" ${(r ? r.month : Number(ui.month.slice(5, 7))) === i + 1 ? 'selected' : ''}>${monthNameOf(i + 1)}</option>`).join('')}</select></label>
+      <label class="field"><span>Starts from</span><input type="month" name="start" value="${r ? r.start : ui.month}"></label>
+      <p class="note">It appears in Bills on its date each time. You confirm the amount when you pay, so a fee that changes is no problem.</p>
+      ${r ? `<label class="check"><input type="checkbox" name="paused" ${r.paused ? 'checked' : ''}><span>Paused</span></label>` : ''}
+      <button class="btn">${r ? 'Save changes' : 'Add'}</button>
+      ${r ? `<button type="button" class="btn danger" data-act="del-rec" data-id="${r.id}">Delete</button>` : ''}
+    </form>`);
+}
+
+function emiSheet(e) {
+  const emiCat = catsOf('expense').find((c) => /emi|loan/i.test(c.name));
+  const tenure = e ? e.tenure : 12;
+  const pick = [3, 6, 12, 24].includes(tenure) ? String(tenure) : 'other';
+  openSheet(e ? 'Edit EMI' : 'New EMI', `
+    <form data-form="emi" novalidate>
+      <input type="hidden" name="id" value="${e ? e.id : ''}">
+      <label class="field"><span>What is it for?</span><input type="text" name="name" maxlength="60" autocomplete="off" placeholder="Phone, laptop, AC…" value="${esc(e ? e.name : '')}" ${e ? '' : 'data-autofocus'}></label>
+      <div class="two">
+        <label class="field"><span>Monthly instalment</span><input type="text" inputmode="decimal" name="monthly" placeholder="0" autocomplete="off" value="${e ? e.monthly : ''}"></label>
+        <label class="field"><span>Day of the month</span><input type="text" inputmode="numeric" name="day" autocomplete="off" value="${e ? e.day : 1}"></label>
+      </div>
+      <div class="field"><span>Tenure in months</span>
+        <div class="seg" role="radiogroup" aria-label="Tenure in months" style="grid-template-columns:repeat(5,1fr);margin-bottom:0">
+          ${['3', '6', '12', '24', 'other'].map((v) => `<label><input type="radio" name="tenurePick" value="${v}" ${v === pick ? 'checked' : ''}><span>${v === 'other' ? 'Other' : v}</span></label>`).join('')}
+        </div></div>
+      <label class="field ${pick === 'other' ? '' : 'hidden'}" data-tenure-wrap><span>Number of months</span>
+        <input type="text" inputmode="numeric" name="tenureOther" autocomplete="off" placeholder="For example 18" value="${pick === 'other' ? tenure : ''}"></label>
+      <div class="two">
+        <label class="field"><span>First instalment month</span><input type="month" name="start" value="${e ? e.start : curYM()}"></label>
+        <label class="field"><span>Instalments already paid</span><input type="text" inputmode="numeric" name="paidBefore" autocomplete="off" placeholder="0" value="${e && e.paidBefore ? e.paidBefore : ''}"></label>
+      </div>
+      <label class="field"><span>Expense category</span><select name="categoryId">${catOptions('expense', e ? e.categoryId : emiCat && emiCat.id)}</select></label>
+      <p class="note" data-emi-summary></p>
+      <button class="btn">${e ? 'Save changes' : 'Add EMI'}</button>
+      ${e ? `<button type="button" class="btn danger" data-act="del-emi" data-id="${e.id}">Delete</button>` : ''}
+    </form>`);
+  syncEmiForm($('#sheet-root form'));
+}
+
+function emiTenure(form) {
+  const pick = form.elements.tenurePick.value;
+  const n = pick === 'other' ? Number(String(form.elements.tenureOther.value).trim()) : Number(pick);
+  return Number.isInteger(n) && n >= 1 && n <= 360 ? n : NaN;
+}
+
+function syncEmiForm(form) {
+  $('[data-tenure-wrap]', form).classList.toggle('hidden', form.elements.tenurePick.value !== 'other');
+  const tenure = emiTenure(form);
+  const monthly = parseAmount(form.elements.monthly.value);
+  const start = form.elements.start.value;
+  $('[data-emi-summary]', form).textContent = tenure && monthly > 0 && isYM(start)
+    ? `${tenure} instalments of ${fmt(monthly)} = ${fmt(monthly * tenure)} in total. It repeats in Bills every month until the last instalment in ${ymLabel(addMonths(start, tenure - 1))}.`
+    : 'It repeats in Bills every month until the last instalment.';
+}
+
+function emiDetailSheet(e) {
+  const st = emiStats(e);
+  const now = curYM();
+  openSheet(e.name, `
+    <div class="kpis three" style="margin-bottom:14px">
+      <div class="kpi"><div class="label">Total</div><div class="v">${fmt(st.total)}</div></div>
+      <div class="kpi"><div class="label">Paid</div><div class="v">${st.paidCount} of ${e.tenure}</div></div>
+      <div class="kpi"><div class="label">Left</div><div class="v">${fmt(st.left)}</div></div>
+    </div>
+    <p>${fmt(e.monthly)} a month for ${plural(e.tenure, 'month')}, from ${ymShort(e.start)} to ${ymShort(st.end)}.</p>
+    <div class="list">${st.months.map((m) => {
+      const [cls, label] = m.before ? ['done', '✓ Paid earlier'] : m.tx ? ['done', '✓ Paid'] : m.ym < now ? ['overdue', '⚠ Overdue'] : m.ym === now ? ['', 'Due this month'] : ['', 'Upcoming'];
+      const inner = `<span class="row-main"><span class="row-top"><span class="name">${m.seq}. ${ymLabel(m.ym)}</span><span class="amt">${fmt(m.tx ? m.tx.amount : e.monthly)}</span></span>
+        <span class="row-top"><span class="row-sub">${m.tx ? `Paid ${fmtShort(m.tx.date)}` : m.before ? '' : 'Tap to mark as paid'}</span><span class="pill ${cls}">${label}</span></span></span>`;
+      return m.before ? `<div class="row">${inner}</div>` : `<button class="row" data-act="emi-month" data-id="${e.id}" data-period="${m.ym}">${inner}</button>`;
+    }).join('')}</div>
+    <button class="btn ghost" data-act="edit-emi" data-id="${e.id}">Edit EMI</button>`);
+}
+
+function planSheet(p) {
+  openSheet(p ? 'Edit plan' : 'New plan', `
+    <form data-form="plan" novalidate>
+      <input type="hidden" name="id" value="${p ? p.id : ''}">
+      <label class="field"><span>What do you plan to buy or do?</span><input type="text" name="name" maxlength="60" autocomplete="off" placeholder="New phone, family trip…" value="${esc(p ? p.name : '')}" ${p ? '' : 'data-autofocus'}></label>
+      <div class="two">
+        <label class="field"><span>Expected cost</span><input type="text" inputmode="decimal" name="price" placeholder="0" autocomplete="off" value="${p ? p.price : ''}"></label>
+        <label class="field"><span>By when (optional)</span><input type="month" name="target" value="${p ? p.target : ''}"></label>
+      </div>
+      <label class="field"><span>Priority</span><select name="priority">
+        ${['high', 'medium', 'low'].map((v) => `<option value="${v}" ${(p ? p.priority : 'medium') === v ? 'selected' : ''}>${v[0].toUpperCase() + v.slice(1)}</option>`).join('')}</select></label>
+      <label class="field"><span>Note (optional)</span><input type="text" name="note" maxlength="120" autocomplete="off" value="${esc(p ? p.note : '')}"></label>
+      ${p ? `<label class="check"><input type="checkbox" name="done" ${p.done ? 'checked' : ''}><span>Done</span></label>` : ''}
+      <button class="btn">${p ? 'Save changes' : 'Add plan'}</button>
+      ${p && !p.done ? `<button type="button" class="btn ghost" data-act="plan-bought" data-id="${p.id}">I bought it, add as an expense</button>` : ''}
+      ${p ? `<button type="button" class="btn danger" data-act="del-plan" data-id="${p.id}">Delete</button>` : ''}
+    </form>`);
+}
+
+function debtSheet(d, kind) {
+  const k = d ? d.kind : kind;
+  const recv = k === 'receivable';
+  openSheet(d ? 'Edit' : recv ? 'Money someone owes you' : 'Money you owe', `
+    <form data-form="debt" novalidate>
+      <input type="hidden" name="id" value="${d ? d.id : ''}"><input type="hidden" name="kind" value="${k}">
+      <label class="field"><span>${recv ? 'Who owes you?' : 'Who do you owe?'}</span><input type="text" name="person" maxlength="60" autocomplete="off" value="${esc(d ? d.person : '')}" ${d ? '' : 'data-autofocus'}></label>
+      <label class="field"><span>Amount</span><input type="text" inputmode="decimal" name="amount" placeholder="0" autocomplete="off" value="${d ? d.amount : ''}"></label>
+      <div class="two">
+        <label class="field"><span>Date</span><input type="date" name="date" value="${d ? d.date : today()}"></label>
+        <label class="field"><span>Due by (optional)</span><input type="date" name="due" value="${d ? d.due : ''}"></label>
+      </div>
+      <label class="field"><span>Note (optional)</span><input type="text" name="note" maxlength="120" autocomplete="off" value="${esc(d ? d.note : '')}"></label>
+      <button class="btn">${d ? 'Save changes' : 'Add'}</button>
+      ${d ? `<button type="button" class="btn danger" data-act="del-debt" data-id="${d.id}">Delete</button>` : ''}
+    </form>`);
+}
+
+function debtDetailSheet(d) {
+  const recv = d.kind === 'receivable';
+  const left = debtLeft(d);
+  openSheet(d.person, `
+    <div class="kpis three" style="margin-bottom:14px">
+      <div class="kpi"><div class="label">Amount</div><div class="v">${fmt(d.amount)}</div></div>
+      <div class="kpi"><div class="label">${recv ? 'Received' : 'Paid back'}</div><div class="v">${fmt(debtPaid(d))}</div></div>
+      <div class="kpi"><div class="label">Left</div><div class="v">${fmt(left)}</div></div>
+    </div>
+    <p>${recv ? 'Owes you since' : 'You owe since'} ${fmtDay(d.date)}${d.due ? ` · due ${fmtDay(d.due)}` : ''}${d.note ? ` · ${esc(d.note)}` : ''}</p>
+    ${d.payments.length ? `<div class="list">${d.payments.map((p) => `<div class="row"><span class="row-main"><span class="row-top">
+      <span class="name">${fmtDay(p.date)}</span><span class="amt">${fmt(p.amount)}</span></span></span>
+      <button class="x" data-act="del-debtpay" data-id="${d.id}" data-pay="${p.id}" aria-label="Remove this payment">✕</button></div>`).join('')}</div>` : ''}
+    ${d.settled ? '' : `<form data-form="debtpay" novalidate>
+      <input type="hidden" name="id" value="${d.id}">
+      <div class="two">
+        <label class="field"><span>${recv ? 'Amount received' : 'Amount paid back'}</span><input type="text" inputmode="decimal" name="amount" autocomplete="off" value="${left || ''}"></label>
+        <label class="field"><span>Date</span><input type="date" name="date" value="${today()}"></label>
+      </div>
+      <button class="btn">${recv ? 'Record money received' : 'Record payment'}</button>
+    </form>`}
+    <button class="btn ghost" data-act="toggle-debt" data-id="${d.id}">${d.settled ? 'Reopen' : 'Mark as settled'}</button>
+    <button class="btn ghost" data-act="edit-debt" data-id="${d.id}">Edit</button>
+    <p class="note" style="margin-top:12px">Receivable and payable are tracked on their own and do not change your monthly income or expenses.</p>`);
+}
+
+function syncRecForm(form) {
+  $('[data-month-wrap]', form).classList.toggle('hidden', form.elements.frequency.value !== 'yearly');
+}
+
+/* ---------- Saving forms ---------- */
+
+const amountOf = (v) => (String(v ?? '').trim() ? parseAmount(v) : 0);
+const dayOf = (v) => { const n = Math.round(Number(String(v).trim())); return n >= 1 && n <= 31 ? n : NaN; };
+const done = () => { save(); closeSheet(); render(); };
+
+function submitOnboard(f) {
+  state.settings.currency = f.currency;
+  state.settings.started = true;
+  if (!state.categories.length) state.categories = defaultCategories();
+  fmtCache = {};
+  save(); render();
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+}
+
+function submitTx(f) {
+  const amount = parseAmount(f.amount);
+  if (!(amount > 0)) return toast('Enter an amount above zero.');
+  if (!TYPES.includes(f.type)) return;
+  if (!isDate(f.date)) return toast('Pick a date.');
+  const c = cat(f.categoryId);
+  const data = { type: f.type, amount, categoryId: c && c.type === f.type ? c.id : '', date: f.date, note: f.note.trim(),
+    recurringId: f.recurringId || '', emiId: f.emiId || '', planId: f.planId || '', period: f.period || '' };
+  const existing = f.id && state.transactions.find((t) => t.id === f.id);
+  if (existing) Object.assign(existing, data);
+  else state.transactions.push({ id: uid(), created: Date.now(), ...data });
+  if (data.planId) { const p = state.plans.find((x) => x.id === data.planId); if (p) p.done = true; }
+  done();
+  toast(existing ? 'Saved' : `${TYPE_LABEL[f.type]} added`);
+}
+
+function submitCat(f) {
+  const name = f.name.trim();
+  if (!name) return toast('Give it a name.');
+  const budget = amountOf(f.budget);
+  if (Number.isNaN(budget) || budget < 0) return toast('That limit is not a valid number.');
+  const data = { name, emoji: f.emoji.trim(), group: f.group === 'secondary' ? 'secondary' : 'primary', budget };
+  const existing = f.id && cat(f.id);
+  if (existing) Object.assign(existing, data);
+  else state.categories.push({ id: uid(), type: TYPES.includes(f.type) ? f.type : 'expense', ...data });
+  done();
+}
+
+function submitRec(f) {
+  const name = f.name.trim();
+  if (!name) return toast('Give it a name.');
+  const amount = parseAmount(f.amount);
+  if (!(amount > 0)) return toast('Enter an amount above zero.');
+  const day = dayOf(f.day);
+  if (Number.isNaN(day)) return toast('The day must be between 1 and 31.');
+  if (!isYM(f.start)) return toast('Pick the month it starts from.');
+  const c = cat(f.categoryId);
+  const data = { type: f.type, name, amount, categoryId: c && c.type === f.type ? c.id : '', frequency: f.frequency === 'yearly' ? 'yearly' : 'monthly',
+    day, month: Number(f.month) || 1, start: f.start, paused: !!f.paused };
+  const existing = f.id && state.recurring.find((r) => r.id === f.id);
+  if (existing) Object.assign(existing, data);
+  else state.recurring.push({ id: uid(), end: '', skips: [], note: '', ...data });
+  done();
+}
+
+function submitEmi(f, form) {
+  const name = f.name.trim();
+  if (!name) return toast('Say what the EMI is for.');
+  const monthly = parseAmount(f.monthly);
+  if (!(monthly > 0)) return toast('Enter the monthly instalment.');
+  const tenure = emiTenure(form);
+  if (!tenure) return toast('Enter the tenure as a number of months, from 1 to 360.');
+  const day = dayOf(f.day);
+  if (Number.isNaN(day)) return toast('The day must be between 1 and 31.');
+  if (!isYM(f.start)) return toast('Pick the month of the first instalment.');
+  const paidBefore = String(f.paidBefore).trim() ? Number(String(f.paidBefore).trim()) : 0;
+  if (!Number.isInteger(paidBefore) || paidBefore < 0 || paidBefore > tenure) return toast(`Instalments already paid must be a number from 0 to ${tenure}.`);
+  const data = { name, monthly, tenure, paidBefore, day, start: f.start, categoryId: cat(f.categoryId) ? f.categoryId : '' };
+  const existing = f.id && state.emis.find((e) => e.id === f.id);
+  if (existing) Object.assign(existing, data);
+  else state.emis.push({ id: uid(), note: '', ...data });
+  ui.bills = 'emi';
+  done();
+}
+
+function submitPlan(f) {
+  const name = f.name.trim();
+  if (!name) return toast('Say what the plan is.');
+  const price = amountOf(f.price);
+  if (Number.isNaN(price) || price < 0) return toast('That cost is not a valid number.');
+  const data = { name, price, target: isYM(f.target) ? f.target : '', priority: ['high', 'medium', 'low'].includes(f.priority) ? f.priority : 'medium', note: f.note.trim() };
+  const existing = f.id && state.plans.find((p) => p.id === f.id);
+  if (existing) Object.assign(existing, data, { done: !!f.done });
+  else state.plans.push({ id: uid(), done: false, ...data });
+  done();
+}
+
+function submitDebt(f) {
+  const person = f.person.trim();
+  if (!person) return toast('Enter a name.');
+  const amount = parseAmount(f.amount);
+  if (!(amount > 0)) return toast('Enter an amount above zero.');
+  if (!isDate(f.date)) return toast('Pick a date.');
+  const data = { person, amount, date: f.date, due: isDate(f.due) ? f.due : '', note: f.note.trim() };
+  const existing = f.id && state.debts.find((d) => d.id === f.id);
+  if (existing) Object.assign(existing, data);
+  else state.debts.push({ id: uid(), kind: f.kind === 'payable' ? 'payable' : 'receivable', settled: false, payments: [], ...data });
+  done();
+}
+
+function submitDebtPay(f) {
+  const d = state.debts.find((x) => x.id === f.id);
+  if (!d) return closeSheet();
+  const amount = parseAmount(f.amount);
+  if (!(amount > 0)) return toast('Enter an amount above zero.');
+  if (!isDate(f.date)) return toast('Pick a date.');
+  d.payments.push({ id: uid(), amount, date: f.date });
+  if (debtPaid(d) >= d.amount) d.settled = true;
+  save(); render(); debtDetailSheet(d);
+  toast(d.settled ? 'Fully settled' : 'Recorded');
+}
+
+/* ---------- Export, backup, restore ---------- */
+
+async function shareOrDownload(filename, text, mime) {
+  const file = new File([text], filename, { type: mime });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); return; }
+    catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function exportCsv() {
+  if (!state.transactions.length) return toast('There are no transactions to export yet.');
+  const cell = (v) => {
+    let s = String(v ?? '');
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; // stop spreadsheets treating text as a formula
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const rows = [['Date', 'Type', 'Category', 'Income kind', 'Description', 'Amount']];
+  for (const t of sortedTx(state.transactions).reverse()) {
+    const c = cat(t.categoryId);
+    rows.push([t.date, TYPE_LABEL[t.type], cell(c ? c.name : ''), t.type === 'income' && c ? c.group : '', cell(t.note), t.amount]);
+  }
+  shareOrDownload(`budget-nest-${today()}.csv`, '﻿' + rows.map((r) => r.join(',')).join('\r\n'), 'text/csv');
+}
+
+function restoreFrom(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    let data;
+    try { data = JSON.parse(reader.result); } catch (e) { data = null; }
+    if (!validState(data)) return toast('That file is not a Budget Nest backup.');
+    confirmSheet('Restore this backup?', `This replaces everything on this device with the backup (${plural(data.transactions.length, 'transaction')}).`,
+      'Replace my data', () => {
+        state = sanitize(data);
+        state.settings.started = true;
+        fmtCache = {}; ui.tab = 'home'; ui.bar = null; ui.month = curYM();
+        save(); applyTheme(); render(); toast('Backup restored');
+      });
+  };
+  reader.onerror = () => toast('Could not read that file.');
+  reader.readAsText(file);
+}
+
+/* ---------- Events ---------- */
+
+const find = (list, el) => list.find((x) => x.id === el.dataset.id);
+const remove = (key, id) => { state[key] = state[key].filter((x) => x.id !== id); };
+
+const actions = {
+  'tab': (el) => { ui.tab = el.dataset.id; ui.bar = null; render(); window.scrollTo(0, 0); },
+  'close-sheet': () => closeSheet(),
+  'confirm-yes': () => { const fn = pendingConfirm; closeSheet(); if (fn) fn(); },
+  'month': (el) => { ui.month = addMonths(ui.month, Number(el.dataset.d)); render(); },
+  'month-now': () => { ui.month = curYM(); render(); },
+  'open-bills': () => { ui.tab = 'bills'; ui.bills = 'month'; render(); window.scrollTo(0, 0); },
+  'filter': (el) => { ui.filter = el.dataset.id; render(); },
+  'open-owed': () => { ui.tab = 'planner'; ui.planner = debtTotal('receivable') ? 'receivable' : 'payable'; render(); window.scrollTo(0, 0); },
+
+  'add-tx': () => txSheet(null, ui.tab === 'reports' ? { type: ui.rep.measure } : {}),
+  'edit-tx': (el) => { const t = find(state.transactions, el); if (t) txSheet(t); },
+  'del-tx': (el) => { remove('transactions', el.dataset.id); done(); toast('Deleted'); },
+
+  'due': (el) => { const it = dueItems(ui.month).find((x) => x.key === el.dataset.key); if (it) openDue(it, ui.month); },
+  'emi-month': (el) => {
+    const ym = el.dataset.period;
+    const it = isYM(ym) && dueItems(ym).find((x) => x.key === 'emi:' + el.dataset.id);
+    if (it) openDue(it, ym);
+  },
+  'bills': (el) => { ui.bills = el.dataset.id; render(); window.scrollTo(0, 0); },
+  'horizon': (el) => { ui.horizon = Number(el.dataset.id) || 12; render(); },
+  'goto-month': (el) => { if (isYM(el.dataset.id)) { ui.month = el.dataset.id; ui.bills = 'month'; render(); window.scrollTo(0, 0); } },
+  'skip-due': (el) => {
+    const r = find(state.recurring, el);
+    if (r && isYM(el.dataset.period) && !r.skips.includes(el.dataset.period)) r.skips.push(el.dataset.period);
+    done(); toast('Skipped for this month');
+  },
+
+  'add-rec': () => recSheet(null),
+  'edit-rec': (el) => { const r = find(state.recurring, el); if (r) recSheet(r); },
+  'del-rec': (el) => confirmSheet('Delete this repeating item?', 'It stops appearing in Bills. Payments you already recorded stay in your history.', 'Delete', () => { remove('recurring', el.dataset.id); save(); render(); }),
+
+  'add-emi': () => emiSheet(null),
+  'open-emi': (el) => { const e = find(state.emis, el); if (e) emiDetailSheet(e); },
+  'edit-emi': (el) => { const e = find(state.emis, el); if (e) emiSheet(e); },
+  'del-emi': (el) => confirmSheet('Delete this EMI?', 'It stops repeating in Bills. Instalments you already recorded stay in your history as expenses.', 'Delete', () => { remove('emis', el.dataset.id); save(); render(); }),
+
+  'planner': (el) => { ui.planner = el.dataset.id; render(); },
+  'add-plan': () => planSheet(null),
+  'edit-plan': (el) => { const p = find(state.plans, el); if (p) planSheet(p); },
+  'del-plan': (el) => { remove('plans', el.dataset.id); done(); },
+  'plan-bought': (el) => {
+    const p = find(state.plans, el);
+    if (p) txSheet(null, { title: `Bought: ${p.name}`, type: 'expense', amount: p.price, note: p.name, planId: p.id, date: today() });
+  },
+
+  'add-debt': () => debtSheet(null, ui.planner === 'payable' ? 'payable' : 'receivable'),
+  'open-debt': (el) => { const d = find(state.debts, el); if (d) debtDetailSheet(d); },
+  'edit-debt': (el) => { const d = find(state.debts, el); if (d) debtSheet(d); },
+  'toggle-debt': (el) => { const d = find(state.debts, el); if (d) { d.settled = !d.settled; done(); } },
+  'del-debt': (el) => confirmSheet('Delete this entry?', 'It is removed along with its payment history.', 'Delete', () => { remove('debts', el.dataset.id); save(); render(); }),
+  'del-debtpay': (el) => {
+    const d = find(state.debts, el);
+    if (!d) return;
+    d.payments = d.payments.filter((p) => p.id !== el.dataset.pay);
+    save(); render(); debtDetailSheet(d);
+  },
+
+  'add-cat': (el) => catSheet(null, el.dataset.type, el.dataset.group),
+  'edit-cat': (el) => { const c = cat(el.dataset.id); if (c) catSheet(c); },
+  'del-cat': (el) => {
+    const id = el.dataset.id;
+    const n = state.transactions.filter((t) => t.categoryId === id).length;
+    const go = () => { remove('categories', id); save(); render(); toast('Deleted'); };
+    if (n) confirmSheet('Delete this category?', `Its ${plural(n, 'transaction')} will be kept and shown as “Uncategorised”.`, 'Delete category', go);
+    else { closeSheet(); go(); }
+  },
+
+  'rep-period': (el) => { ui.rep.period = el.dataset.id; ui.bar = null; render(); },
+  'rep-measure': (el) => { ui.rep.measure = el.dataset.id; ui.bar = null; render(); },
+  'rep-nav': (el) => {
+    const d = Number(el.dataset.d);
+    const { period, cursor } = ui.rep;
+    ui.rep.cursor = period === 'day' ? addDays(cursor, d) : period === 'month' ? addMonths(cursor.slice(0, 7), d) + '-01' : `${Number(cursor.slice(0, 4)) + d}-01-01`;
+    ui.bar = null; render();
+  },
+  'rep-goto': (el) => { ui.rep.period = 'month'; ui.rep.cursor = el.dataset.id; ui.bar = null; render(); window.scrollTo(0, 0); },
+  'rep-cat': (el) => {
+    const { label, list } = repScope();
+    const id = el.dataset.id;
+    const rows = list.filter((t) => t.type === ui.rep.measure && (cat(t.categoryId) ? t.categoryId : '') === id);
+    openSheet(catLabel(cat(id)), `<p>${fmt(sum(rows, (t) => t.amount))} in ${esc(label)} · ${plural(rows.length, 'entry').replace('entrys', 'entries')}</p>
+      <div class="list">${sortedTx(rows).map((t) => `<button class="row" data-act="edit-tx" data-id="${t.id}"><span class="row-main">
+        <span class="row-top"><span class="name">${esc(t.note || fmtDay(t.date))}</span><span class="amt">${fmt(t.amount)}</span></span>
+        ${t.note ? `<span class="row-sub">${fmtDay(t.date)}</span>` : ''}</span></button>`).join('')}</div>`);
+  },
+  'bar': (el) => { ui.bar = Number(el.dataset.id); render(); },
+
+  'backup': () => shareOrDownload(`budget-nest-backup-${today()}.json`, JSON.stringify(state, null, 2), 'application/json'),
+  'export-csv': () => exportCsv(),
+  'erase': () => confirmSheet('Erase everything?', 'All income, expenses, savings, bills, EMIs, plans and money owed on this device will be deleted. This cannot be undone.', 'Erase everything', () => {
+    const { currency, theme } = state.settings;
+    state = blankState();
+    Object.assign(state.settings, { currency, theme });
+    localStorage.removeItem(OLD_KEY);
+    ui.tab = 'home'; ui.bar = null; ui.search = ''; ui.month = curYM();
+    save(); render();
+  })
+};
+
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-act]');
+  if (!el) return;
+  const fn = actions[el.dataset.act];
+  if (fn) fn(el);
+});
+
+const submitters = { onboard: submitOnboard, tx: submitTx, cat: submitCat, rec: submitRec, emi: submitEmi, plan: submitPlan, debt: submitDebt, debtpay: submitDebtPay };
+document.addEventListener('submit', (e) => {
+  const form = e.target.closest('[data-form]');
+  if (!form) return;
+  e.preventDefault();
+  submitters[form.dataset.form](Object.fromEntries(new FormData(form)), form);
+});
+
+document.addEventListener('change', (e) => {
+  const el = e.target;
+  const form = el.closest('[data-form]');
+  if (form && el.name === 'type' && el.type === 'radio') {
+    form.elements.categoryId.innerHTML = catOptions(el.value);
+    const label = $('[data-note-label]', form);
+    if (label) { label.textContent = NOTE_LABEL[el.value]; form.elements.note.placeholder = NOTE_HINT[el.value]; }
+  } else if (form && form.dataset.form === 'rec' && el.name === 'frequency') {
+    syncRecForm(form);
+  } else if (form && form.dataset.form === 'emi') {
+    syncEmiForm(form);
+  } else if (el.dataset.setting) {
+    state.settings[el.dataset.setting] = el.value;
+    fmtCache = {};
+    save(); applyTheme(); render();
+  } else if (el.id === 'restore-file' && el.files[0]) {
+    restoreFrom(el.files[0]);
+    el.value = '';
+  }
+});
+
+document.addEventListener('input', (e) => {
+  const form = e.target.closest('[data-form="emi"]');
+  if (form) return syncEmiForm(form);
+  if (e.target.id !== 'tx-search') return;
+  ui.search = e.target.value;
+  $('#tx-list').innerHTML = homeListHtml();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && $('#sheet-root').firstChild) closeSheet();
+});
+
+/* ---------- Start ---------- */
+
+applyTheme();
+render();
+
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+}
+
+})();
