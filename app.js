@@ -4,12 +4,13 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '16';
+const APP_VERSION = '17';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
 const TYPE_LABEL = { expense: 'Expense', income: 'Income', saving: 'Savings' };
 const TYPE_PLURAL = { expense: 'Expenses', income: 'Income', saving: 'Savings' };
+const ADD_TITLE = { expense: 'Add an expense', income: 'Add income', saving: 'Add savings' };
 
 const CURRENCIES = ['BDT', 'USD', 'EUR', 'GBP', 'INR', 'PKR', 'LKR', 'NPR', 'AED', 'SAR', 'QAR', 'KWD', 'BHD', 'OMR',
   'JOD', 'EGP', 'MAD', 'CAD', 'AUD', 'NZD', 'JPY', 'CNY', 'HKD', 'SGD', 'MYR', 'IDR', 'PHP', 'THB', 'VND', 'KRW',
@@ -38,6 +39,7 @@ const ICONS = {
   home: '<svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7v8a1 1 0 0 1-1 1h-4v-6h-6v6H5a1 1 0 0 1-1-1z"/></svg>',
   bills: '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16M9 15l2 2 4-4"/></svg>',
   reports: '<svg viewBox="0 0 24 24"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>',
+  savings: '<svg viewBox="0 0 24 24"><path d="M3 10l9-6 9 6M5 10v8M9.500 10v8M14.500 10v8M19 10v8M3 20h18"/></svg>',
   planner: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg>',
   more: '<svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>'
 };
@@ -211,7 +213,7 @@ function save() {
 
 let state = load();
 const ui = {
-  tab: 'home', home: 'month', month: curYM(), filter: 'all', search: '', bar: null, bills: 'month', horizon: 12,
+  tab: 'home', home: 'month', saveYear: curYM().slice(0, 4), month: curYM(), filter: 'all', search: '', bar: null, bills: 'month', horizon: 12,
   rep: { period: 'month', cursor: today(), measure: 'expense' },
   planner: 'plans'
 };
@@ -656,16 +658,28 @@ function confirmSheet(title, message, label, fn) {
 
 /* ---------- Shared pieces ---------- */
 
+// The + button adds whatever belongs to the screen you are on. Only Home offers every kind of entry.
+function fabHtml() {
+  const recv = ui.planner === 'receivable';
+  const fab = {
+    home: ['add-tx', 'Add income, an expense or savings'],
+    bills: ['add-bill', ui.bills === 'emi' ? 'Add an EMI' : 'Add a monthly bill'],
+    savings: ['add-saving', 'Add savings'],
+    reports: ['add-tx', ADD_TITLE[ui.rep.measure]],
+    planner: ui.planner === 'plans' ? ['add-plan', 'Add a plan'] : ['add-debt', recv ? 'Add money someone owes you' : 'Add money you owe']
+  }[ui.tab];
+  return fab ? `<button class="fab" data-act="${fab[0]}" aria-label="${fab[1]}">+</button>` : '';
+}
+
 function render() {
   const app = $('#app');
   if (!state.settings.started) { app.innerHTML = viewWelcome(); return; }
-  const views = { home: viewHome, bills: viewBills, reports: viewReports, planner: viewPlanner, more: viewMore };
-  const tabs = [['home', 'Home'], ['bills', 'Bills'], ['reports', 'Reports'], ['planner', 'Planner'], ['more', 'More']];
+  const views = { home: viewHome, bills: viewBills, savings: viewSavings, reports: viewReports, planner: viewPlanner, more: viewMore };
+  const tabs = [['home', 'Home'], ['bills', 'Bills'], ['savings', 'Savings'], ['reports', 'Reports'], ['planner', 'Planner'], ['more', 'More']];
   const overdue = dueItems(curYM()).filter((it) => dueStatus(it) === 'unpaid').length;
   app.innerHTML = `
     ${views[ui.tab]()}
-    ${ui.tab === 'bills' ? `<button class="fab" data-act="add-bill" aria-label="${ui.bills === 'emi' ? 'Add an EMI' : 'Add a monthly bill'}">+</button>`
-      : ['home', 'reports'].includes(ui.tab) ? '<button class="fab" data-act="add-tx" aria-label="Add income, expense or savings">+</button>' : ''}
+    ${fabHtml()}
     <nav class="tabbar"><div class="tabbar-in">
       ${tabs.map(([id, label]) => `<button class="tab ${ui.tab === id ? 'on' : ''}" data-act="tab" data-id="${id}" ${ui.tab === id ? 'aria-current="page"' : ''}>
         ${ICONS[id]}${id === 'bills' && overdue ? `<i class="badge" aria-label="${overdue} unpaid">${overdue}</i>` : ''}<span>${label}</span></button>`).join('')}
@@ -986,6 +1000,71 @@ function viewUpcoming() {
     <section class="card" style="margin-top:20px"><div class="row-top"><span class="name">Total for ${ui.horizon} months</span><span class="amt">${fmt(grand)}</span></div></section>`;
 }
 
+/* ---------- Savings ---------- */
+
+function viewSavings() {
+  const all = state.transactions.filter((t) => t.type === 'saving');
+  const year = ui.saveYear;
+  const inYear = all.filter((t) => t.date.startsWith(year));
+  const total = sum(all, (t) => t.amount);
+  const yearTotal = sum(inYear, (t) => t.amount);
+  const thisMonth = sum(all.filter((t) => t.date.startsWith(curYM())), (t) => t.amount);
+  const monthsUsed = new Set(inYear.map((t) => t.date.slice(0, 7))).size;
+  const yearIncome = sum(state.transactions.filter((t) => t.type === 'income' && t.date.startsWith(year)), (t) => t.amount);
+  const rate = yearIncome > 0 ? Math.round((yearTotal / yearIncome) * 100) : 0;
+
+  const byFund = {};
+  for (const t of all) { const k = cat(t.categoryId) ? t.categoryId : ''; byFund[k] = r3((byFund[k] || 0) + t.amount); }
+  const funds = Object.entries(byFund).map(([id, v]) => ({ id, c: cat(id), v })).sort((a, z) => z.v - a.v);
+  const top = funds.length ? funds[0].v : 0;
+
+  const buckets = Array.from({ length: 12 }, (_, i) => {
+    const ym = `${year}-${pad(i + 1)}`;
+    return { label: ymLabel(ym), value: sum(inYear.filter((t) => t.date.startsWith(ym)), (t) => t.amount) };
+  });
+  const max = niceMax(Math.max(0, ...buckets.map((b) => b.value)));
+  const sel = ui.bar != null && buckets[ui.bar] ? buckets[ui.bar] : null;
+
+  return `<header class="top"><h1>Savings</h1></header>
+    <section class="card">
+      <div class="label">Saved in total</div>
+      <div class="hero-num">${fmt(total)}</div>
+      <div class="sub">Everything you have set aside so far</div>
+      <div class="kpis three" style="margin-top:14px">
+        <div class="kpi"><div class="label">This month</div><div class="v">${fmt(thisMonth)}</div></div>
+        <div class="kpi"><div class="label">In ${year}</div><div class="v">${fmt(yearTotal)}</div>${rate ? `<div class="s">${rate}% of income</div>` : ''}</div>
+        <div class="kpi"><div class="label">Monthly average</div><div class="v">${fmt(monthsUsed ? Math.round(yearTotal / monthsUsed) : 0)}</div></div>
+      </div>
+    </section>
+    <button class="btn" data-act="add-saving" style="margin-bottom:16px">+ Add savings</button>
+
+    <section class="card">
+      <div class="sec-head" style="margin-top:0"><h2>By fund</h2><button class="link" data-act="add-cat" data-type="saving">+ New fund</button></div>
+      ${funds.length ? `<div class="rank">${funds.map(({ id, c, v }) => `<button class="rank-row" data-act="fund" data-id="${id}">
+        <span class="row-top"><span class="name">${esc(catLabel(c))}</span><span class="amt">${fmt(v)}<span class="share">${Math.round((v / total) * 100)}%</span></span></span>
+        <span class="rank-bar" style="width:${(v / top) * 100}%"></span></button>`).join('')}</div>`
+        : '<div class="empty">Nothing saved yet. Tap “Add savings” to record money you set aside, such as a children’s fund or an emergency fund.</div>'}
+    </section>
+
+    <div class="month-nav" style="margin-bottom:14px">
+      <button class="nav-btn" data-act="save-year" data-d="-1" aria-label="Previous year">‹</button>
+      <div class="month-title small">Savings in ${year}</div>
+      <button class="nav-btn" data-act="save-year" data-d="1" aria-label="Next year">›</button>
+    </div>
+    <section class="card">
+      <div class="sec-head" style="margin-top:0"><h2>Saved per month</h2></div>
+      <div class="readout">${sel ? `<b>${fmt(sel.value)}</b> · ${esc(sel.label)}` : 'Tap a bar to see the amount.'}</div>
+      <div class="chart" role="img" aria-label="Savings per month in ${year}">
+        <div class="grid-line" style="top:0"><span>${fmt(max)}</span></div>
+        <div class="grid-line" style="top:50%"><span>${fmt(max / 2)}</span></div>
+        <div class="cols">${buckets.map((b, i) => `<button class="col ${ui.bar === i ? 'sel' : ''}" data-act="bar" data-id="${i}" aria-label="${esc(b.label)}: ${esc(fmt(b.value))}"><span style="height:${(b.value / max) * 100}%"></span></button>`).join('')}</div>
+      </div>
+      <div class="x-axis"><span>${monthNameOf(1).slice(0, 3)}</span><span>${monthNameOf(12).slice(0, 3)}</span></div>
+    </section>
+    <div class="sec-head"><h2>Entries in ${year}</h2></div>
+    ${txGroups(inYear, `No savings recorded in ${year}.`)}`;
+}
+
 /* ---------- Reports ---------- */
 
 function niceMax(v) {
@@ -1229,12 +1308,13 @@ function txSheet(tx, preset = {}) {
   const v = tx || preset;
   const type = v.type || 'expense';
   const linked = !!(v.recurringId || v.emiId);
+  const fixedType = linked || (!tx && !!preset.lockType);
   const date = tx ? tx.date : preset.date || (ui.month === curYM() || ui.tab !== 'home' ? today() : ui.month + '-01');
   const hidden = ['recurringId', 'emiId', 'planId', 'period'].map((k) => `<input type="hidden" name="${k}" value="${esc(v[k] || '')}">`).join('');
-  openSheet(preset.title || (tx ? 'Edit' : 'Add'), `
+  openSheet(preset.title || (tx ? 'Edit' : preset.lockType ? ADD_TITLE[type] : 'Add'), `
     <form data-form="tx" novalidate>
       <input type="hidden" name="id" value="${tx ? tx.id : ''}">${hidden}
-      ${linked ? `<input type="hidden" name="type" value="${type}">` : typeRadios(type)}
+      ${fixedType ? `<input type="hidden" name="type" value="${type}">` : typeRadios(type)}
       <label class="field"><span>Amount</span>
         <input class="amount-input" type="text" inputmode="decimal" name="amount" placeholder="0" autocomplete="off" value="${v.amount || ''}" ${tx || v.amount ? '' : 'data-autofocus'}></label>
       <label class="field"><span data-note-label>${NOTE_LABEL[type]}</span>
@@ -1657,7 +1737,19 @@ const actions = {
   'filter': (el) => { ui.filter = el.dataset.id; render(); },
   'open-owed': () => { ui.tab = 'planner'; ui.planner = debtTotal('receivable') ? 'receivable' : 'payable'; render(); window.scrollTo(0, 0); },
 
-  'add-tx': () => txSheet(null, ui.tab === 'reports' ? { type: ui.rep.measure } : {}),
+  'add-tx': () => txSheet(null, ui.tab === 'reports' ? { type: ui.rep.measure, lockType: true } : {}),
+  'add-saving': () => txSheet(null, { type: 'saving', lockType: true }),
+  'save-year': (el) => { ui.saveYear = String(Number(ui.saveYear) + Number(el.dataset.d)); ui.bar = null; render(); },
+  'fund': (el) => {
+    const id = el.dataset.id;
+    const rows = state.transactions.filter((t) => t.type === 'saving' && (cat(t.categoryId) ? t.categoryId : '') === id);
+    openSheet(catLabel(cat(id)), `<p>${fmt(sum(rows, (t) => t.amount))} saved in total</p>
+      <div class="list">${sortedTx(rows).map((t) => `<button class="row" data-act="edit-tx" data-id="${t.id}"><span class="row-main">
+        <span class="row-top"><span class="name">${fmtDay(t.date)}, ${t.date.slice(0, 4)}</span><span class="amt">${fmt(t.amount)}</span></span>
+        ${t.note ? `<span class="row-sub">${esc(t.note)}</span>` : ''}</span></button>`).join('')}</div>
+      <button class="btn" data-act="add-saving-to" data-id="${id}">Add savings to this fund</button>`);
+  },
+  'add-saving-to': (el) => txSheet(null, { type: 'saving', lockType: true, categoryId: el.dataset.id }),
   'edit-tx': (el) => { const t = find(state.transactions, el); if (t) txSheet(t); },
   'del-tx': (el) => { remove('transactions', el.dataset.id); done(); toast('Deleted'); },
 
