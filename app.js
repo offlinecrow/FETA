@@ -3,6 +3,8 @@
 
 /* ---------- Constants ---------- */
 
+// Change this with every release, together with VERSION in sw.js.
+const APP_VERSION = '8';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -719,6 +721,7 @@ function viewWelcome() {
     <button class="btn ghost" data-act="open-account" data-id="signin">I already have an account</button>
     <button class="btn ghost" data-act="start">Use without an account</button>
     <p class="note" style="margin-top:14px">With an account your data is backed up online and stays the same on every device you sign in on. Without one it stays only on this device. You can create an account later under More.</p>
+    <p class="note" style="text-align:center;margin-top:24px">Version ${APP_VERSION}</p>
   </div>`;
 }
 
@@ -1100,7 +1103,12 @@ function viewMore() {
     </section>
     <div class="sec-head"><h2>Put it on your home screen</h2></div>
     <section class="card"><p class="note" style="margin:0">In Safari, tap the Share button, then “Add to Home Screen”. The app then opens full screen and works without internet.</p></section>
-    <div class="brand-foot">${LOGO_SVG}<p class="note">Family Expense Tracker App · ${plural(state.transactions.length, 'transaction')}</p></div>`;
+    <div class="sec-head"><h2>App version</h2></div>
+    <section class="card">
+      <p class="note" style="margin:0 0 14px">You have version ${APP_VERSION}. The app updates itself when you open it with internet. If something looks out of date, tap the button. Your data is not affected.</p>
+      <button class="btn ghost" data-act="update-app">Get the latest version</button>
+    </section>
+    <div class="brand-foot">${LOGO_SVG}<p class="note">Family Expense Tracker App · version ${APP_VERSION} · ${plural(state.transactions.length, 'transaction')}</p></div>`;
 }
 
 /* ---------- Sheets ---------- */
@@ -1481,6 +1489,14 @@ const remove = (key, id) => { state[key] = state[key].filter((x) => x.id !== id)
 const actions = {
   'tab': (el) => { ui.tab = el.dataset.id; ui.bar = null; render(); window.scrollTo(0, 0); },
   'start': () => { startApp(); save(); render(); },
+  'update-app': async () => {
+    toast('Getting the latest version…');
+    try {
+      if (navigator.serviceWorker) await Promise.all((await navigator.serviceWorker.getRegistrations()).map((r) => r.unregister()));
+      if (window.caches) await Promise.all((await caches.keys()).map((k) => caches.delete(k)));
+    } catch (e) { /* reload anyway */ }
+    location.reload();
+  },
   'toggle-pass': (el) => {
     const input = el.parentElement.querySelector('input');
     const show = input.type === 'password';
@@ -1677,7 +1693,20 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 window.addEventListener('online', () => syncNow());
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  // When a newer version takes over, reload once so the screen shows it (never while a form is open).
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloaded || $('#sheet-root').firstChild) return;
+    reloaded = true;
+    location.reload();
+  });
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      // A home-screen app can stay open in the background for days, so look for an update each time it comes back.
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+    }).catch(() => {});
+  });
 }
 
 })();
