@@ -256,8 +256,10 @@ button.card.tap:active { background: color-mix(in srgb, var(--ink) 5%, var(--sur
 
 .pill { flex: none; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--ink) 8%, transparent); color: var(--ink2); white-space: nowrap; }
 .pill.done { color: var(--good); background: color-mix(in srgb, var(--good) 12%, transparent); }
-.pill.overdue { color: var(--crit); background: color-mix(in srgb, var(--crit) 12%, transparent); }
+.pill.overdue, .pill.unpaid { color: var(--crit); background: color-mix(in srgb, var(--crit) 12%, transparent); }
 .row-top .row-sub { min-width: 0; }
+/* An unpaid bill is shown in red until it is marked paid. */
+.row.is-unpaid .name, .row.is-unpaid .amt, .row.is-unpaid .row-sub { color: var(--crit); }
 .sec-head .sub { font-size: 13px; text-align: right; }
 
 button.rank-row { display: block; width: 100%; background: none; border: 0; padding: 0; text-align: left; }

@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '11';
+const APP_VERSION = '12';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -594,10 +594,13 @@ function dueItems(ym) {
   }
   return items.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
+// A bill is Unpaid from the first day of its month until it is marked paid, whatever its due day.
+// Months that have not started yet are only "Upcoming". Expected income is never shown as unpaid.
 function dueStatus(it) {
   if (it.paid) return 'done';
   if (it.skipped) return 'skipped';
-  return it.date < today() ? 'overdue' : 'pending';
+  if (it.type === 'income') return 'expected';
+  return it.date.slice(0, 7) > curYM() ? 'upcoming' : 'unpaid';
 }
 const isOpen = (it) => !it.paid && !it.skipped;
 
@@ -606,7 +609,7 @@ function openDue(it, ym) {
   if (it.paid) return txSheet(it.paid);
   if (it.skipped) { it.ref.skips = it.ref.skips.filter((m) => m !== ym); save(); render(); return toast('Back on the list'); }
   const income = it.type === 'income';
-  txSheet(null, { title: `${income ? 'Received' : it.type === 'saving' ? 'Save' : 'Pay'}: ${it.name}`, cta: income ? 'Mark as received' : 'Mark as done',
+  txSheet(null, { title: `${income ? 'Received' : it.type === 'saving' ? 'Save' : 'Pay'}: ${it.name}`, cta: income ? 'Mark as received' : 'Mark as paid',
     type: it.type, amount: it.amount, categoryId: it.categoryId, note: it.name, date: ym === curYM() ? today() : it.date,
     recurringId: it.kind === 'rec' ? it.ref.id : '', emiId: it.kind === 'emi' ? it.ref.id : '', period: ym, canSkip: it.kind === 'rec' });
 }
@@ -658,13 +661,13 @@ function render() {
   if (!state.settings.started) { app.innerHTML = viewWelcome(); return; }
   const views = { home: viewHome, bills: viewBills, reports: viewReports, planner: viewPlanner, more: viewMore };
   const tabs = [['home', 'Home'], ['bills', 'Bills'], ['reports', 'Reports'], ['planner', 'Planner'], ['more', 'More']];
-  const overdue = dueItems(curYM()).filter((it) => dueStatus(it) === 'overdue').length;
+  const overdue = dueItems(curYM()).filter((it) => dueStatus(it) === 'unpaid').length;
   app.innerHTML = `
     ${views[ui.tab]()}
     ${['home', 'bills', 'reports'].includes(ui.tab) ? '<button class="fab" data-act="add-tx" aria-label="Add income, expense or savings">+</button>' : ''}
     <nav class="tabbar"><div class="tabbar-in">
       ${tabs.map(([id, label]) => `<button class="tab ${ui.tab === id ? 'on' : ''}" data-act="tab" data-id="${id}" ${ui.tab === id ? 'aria-current="page"' : ''}>
-        ${ICONS[id]}${id === 'bills' && overdue ? `<i class="badge" aria-label="${overdue} overdue">${overdue}</i>` : ''}<span>${label}</span></button>`).join('')}
+        ${ICONS[id]}${id === 'bills' && overdue ? `<i class="badge" aria-label="${overdue} unpaid">${overdue}</i>` : ''}<span>${label}</span></button>`).join('')}
     </div></nav>`;
 }
 
@@ -788,7 +791,7 @@ function viewHome() {
     if (openOut) bits.push(`${fmt(openOut)} still to pay`);
     if (openIn) bits.push(`${fmt(openIn)} income expected`);
     dueCard = `<button class="card tap" data-act="open-bills">
-      <div class="row-top"><span class="name">${plural(open.length, 'item')} pending this month</span><span class="chev-r">›</span></div>
+      <div class="row-top"><span class="name">${openOut ? `${plural(open.filter((it) => it.type !== 'income').length, 'bill')} unpaid this month` : `${plural(open.length, 'item')} expected this month`}</span><span class="chev-r">›</span></div>
       <div class="sub">${bits.join(' · ')}</div>
       ${isNow && openOut ? `<div class="sub">After paying them: <b class="${after < 0 ? 'over' : ''}">${fmt(after)}</b>${after > 0 ? ` · about ${fmt(Math.floor(after / daysLeft))} a day for ${plural(daysLeft, 'day')}` : ''}</div>` : ''}
     </button>`;
@@ -826,9 +829,9 @@ function viewHome() {
 function dueRow(it) {
   const st = dueStatus(it);
   const c = cat(it.categoryId);
-  const pill = { done: '✓ Done', pending: 'Pending', overdue: '⚠ Overdue', skipped: 'Skipped' }[st];
+  const pill = { done: it.type === 'income' ? '✓ Received' : '✓ Paid', unpaid: '⚠ Unpaid', upcoming: 'Upcoming', expected: 'Expected', skipped: 'Skipped' }[st];
   const when = it.paid ? `${it.type === 'income' ? 'Received' : 'Paid'} ${fmtShort(it.paid.date)}` : st === 'skipped' ? 'Not this month' : `Due ${fmtShort(it.date)}`;
-  return `<button class="row" data-act="due" data-key="${it.key}">
+  return `<button class="row ${st === 'unpaid' ? 'is-unpaid' : ''}" data-act="due" data-key="${it.key}">
     <span class="emoji" aria-hidden="true">${esc((c && c.emoji) || '•')}</span>
     <span class="row-main">
       <span class="row-top"><span class="name">${esc(it.name)}</span><span class="amt">${fmt(it.paid ? it.paid.amount : it.amount)}</span></span>
@@ -873,7 +876,7 @@ function viewBillsMonth() {
     ${billsHead()}
     ${monthNav(ym, 'month')}
     ${ym === curYM() ? '' : '<button class="link center" data-act="month-now">Back to this month</button>'}
-    <div class="sec-head"><h2>To pay</h2><span class="sub">${out.length ? `${paidCount} of ${out.length} done · ${fmt(openOut)} left` : ''}</span></div>
+    <div class="sec-head"><h2>To pay</h2><span class="sub">${out.length ? `${paidCount} of ${out.length} paid · ${fmt(openOut)} unpaid` : ''}</span></div>
     <div class="list">${out.length ? out.map(dueRow).join('') : '<div class="empty">No repeating expenses or EMIs fall in this month. Add your rent, school fee, bills and subscriptions below and they will show up here every month.</div>'}</div>
     ${inc.length ? `<div class="sec-head"><h2>Expected income</h2></div><div class="list">${inc.map(dueRow).join('')}</div>` : ''}
 
@@ -1288,7 +1291,7 @@ function emiDetailSheet(e) {
     </div>
     <p>${fmt(e.monthly)} a month for ${plural(e.tenure, 'month')}, from ${ymShort(e.start)} to ${ymShort(st.end)}.</p>
     <div class="list">${st.months.map((m) => {
-      const [cls, label] = m.before ? ['done', '✓ Paid earlier'] : m.tx ? ['done', '✓ Paid'] : m.ym < now ? ['overdue', '⚠ Overdue'] : m.ym === now ? ['', 'Due this month'] : ['', 'Upcoming'];
+      const [cls, label] = m.before ? ['done', '✓ Paid earlier'] : m.tx ? ['done', '✓ Paid'] : m.ym <= now ? ['unpaid', '⚠ Unpaid'] : ['', 'Upcoming'];
       const inner = `<span class="row-main"><span class="row-top"><span class="name">${m.seq}. ${ymLabel(m.ym)}</span><span class="amt">${fmt(m.tx ? m.tx.amount : e.monthly)}</span></span>
         <span class="row-top"><span class="row-sub">${m.tx ? `Paid ${fmtShort(m.tx.date)}` : m.before ? '' : 'Tap to mark as paid'}</span><span class="pill ${cls}">${label}</span></span></span>`;
       return m.before ? `<div class="row">${inner}</div>` : `<button class="row" data-act="emi-month" data-id="${e.id}" data-period="${m.ym}">${inner}</button>`;
