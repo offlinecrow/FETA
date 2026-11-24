@@ -155,6 +155,16 @@ public class MainActivity extends Activity {
 
     /** The one thing a web page cannot do inside an app window: save a file. FETA calls this for backups and CSV exports. */
     private class Bridge {
+        /** Lets FETA compare the installed Android app with the newest one published on GitHub. */
+        @JavascriptInterface
+        public int versionCode() {
+            try {
+                return getPackageManager().getPackageInfo(getPackageName(), 0).versionCode;
+            } catch (Exception e) {
+                return 0;
+            }
+        }
+
         @JavascriptInterface
         public boolean saveFile(String name, String mime, String text) {
             if (!isApp(Uri.parse(currentUrl)) || name == null || text == null) return false;

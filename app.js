@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '9';
+const APP_VERSION = '10';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -510,6 +510,42 @@ async function handleAuthLink() {
   } catch (e) { toast(authMessage(e)); return false; }
 }
 
+/* ---------- Android app updates ---------- */
+
+// The screens and features update themselves from the website. Only the small Android shell around them
+// needs a new install now and then; when GitHub has a newer one, the app offers it.
+const android = window.FetaAndroid || null;
+let androidUpdate = null;
+
+function androidVersion() {
+  // The first Android build could not report its version, so a missing answer means version 1.
+  try { return android && android.versionCode ? Number(android.versionCode()) || 1 : 1; } catch (e) { return 1; }
+}
+
+async function checkAndroidUpdate() {
+  if (!android) return;
+  try {
+    const res = await fetch('android.json', { cache: 'no-store' });
+    if (!res.ok) return;
+    const info = await res.json();
+    const url = String(info.url || '');
+    const newer = Number(info.versionCode) > androidVersion() && url.startsWith('https://github.com/offlinecrow/FETA/releases/');
+    const next = newer ? { name: String(info.versionName || '').slice(0, 20), url } : null;
+    const changed = !!next !== !!androidUpdate;
+    androidUpdate = next;
+    if (changed && !$('#sheet-root').firstChild) render();
+  } catch (e) { /* offline: try again next time */ }
+}
+
+function androidUpdateCard() {
+  if (!androidUpdate) return '';
+  return `<section class="card">
+    <div class="name" style="white-space:normal">A new version of the Android app is ready${androidUpdate.name ? ` (${esc(androidUpdate.name)})` : ''}</div>
+    <p class="note" style="margin:6px 0 14px">Tap Update. When the download finishes, open it and choose Install. Your data stays as it is.</p>
+    <button class="btn" data-act="android-update">Update</button>
+  </section>`;
+}
+
 /* ---------- Derived data ---------- */
 
 const cat = (id) => state.categories.find((c) => c.id === id) || null;
@@ -762,6 +798,7 @@ function viewHome() {
       ${monthNav(ym, 'month')}
       ${isNow ? '' : '<button class="link center" data-act="month-now">Back to this month</button>'}
     </header>
+    ${androidUpdateCard()}
     <section class="card">
       <div class="label">Left this month</div>
       <div class="hero-num ${t.balance < 0 ? 'neg' : ''}">${fmt(t.balance)}</div>
@@ -1104,8 +1141,9 @@ function viewMore() {
     ${window.FetaAndroid ? '' : `<div class="sec-head"><h2>Put it on your home screen</h2></div>
     <section class="card"><p class="note" style="margin:0">In Safari, tap the Share button, then “Add to Home Screen”. The app then opens full screen and works without internet.</p></section>`}
     <div class="sec-head"><h2>App version</h2></div>
+    ${androidUpdateCard()}
     <section class="card">
-      <p class="note" style="margin:0 0 14px">You have version ${APP_VERSION}. The app updates itself when you open it with internet. If something looks out of date, tap the button. Your data is not affected.</p>
+      <p class="note" style="margin:0 0 14px">You have version ${APP_VERSION}. ${android ? ` Android app ${androidVersion()}.` : ''} The app updates itself when you open it with internet. If something looks out of date, tap the button. Your data is not affected.</p>
       <button class="btn ghost" data-act="update-app">Get the latest version</button>
     </section>
     <div class="brand-foot">${LOGO_SVG}<p class="note">Family Expense Tracker App · version ${APP_VERSION} · ${plural(state.transactions.length, 'transaction')}</p></div>`;
@@ -1494,6 +1532,7 @@ const remove = (key, id) => { state[key] = state[key].filter((x) => x.id !== id)
 const actions = {
   'tab': (el) => { ui.tab = el.dataset.id; ui.bar = null; render(); window.scrollTo(0, 0); },
   'start': () => { startApp(); save(); render(); },
+  'android-update': () => { if (androidUpdate) location.href = androidUpdate.url; },
   'update-app': async () => {
     toast('Getting the latest version…');
     try {
@@ -1701,7 +1740,8 @@ applyTheme();
 render();
 
 handleAuthLink().then((handled) => { if (!handled) syncNow(); });
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncNow(); });
+checkAndroidUpdate();
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { syncNow(); checkAndroidUpdate(); } });
 window.addEventListener('online', () => syncNow());
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
