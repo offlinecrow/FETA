@@ -1,5 +1,7 @@
-// Offline support: serve the app from cache, refresh the cache in the background.
-const CACHE = 'feta-v4';
+// Offline support. When online, always load the newest files; when offline, use the saved copy.
+// VERSION must change with every release (keep it equal to APP_VERSION in app.js) so phones notice the update.
+const VERSION = '8';
+const CACHE = 'feta-v' + VERSION;
 const SHELL = [
   './',
   'index.html',
@@ -15,7 +17,11 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  event.waitUntil(
+    caches.open(CACHE)
+      .then((c) => c.addAll(SHELL.map((url) => new Request(url, { cache: 'reload' }))))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', (event) => {
@@ -26,26 +32,31 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+function fromNetwork(req, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), ms);
+    fetch(req, { cache: 'no-store' }).then((res) => { clearTimeout(timer); resolve(res); }, (err) => { clearTimeout(timer); reject(err); });
+  });
+}
+
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
   event.respondWith(
     caches.open(CACHE).then(async (cache) => {
-      const cached = await cache.match(req, { ignoreSearch: true });
-      const fresh = fetch(req)
-        .then((res) => {
-          if (res && res.ok) cache.put(req, res.clone());
-          return res;
-        })
-        .catch(() => null);
-      if (cached) {
-        event.waitUntil(fresh);
-        return cached;
+      try {
+        const res = await fromNetwork(req, 4000);
+        if (res && res.ok) cache.put(req, res.clone());
+        return res;
+      } catch (e) {
+        const cached = await cache.match(req, { ignoreSearch: true });
+        if (cached) return cached;
+        if (req.mode === 'navigate') {
+          const shell = await cache.match('index.html');
+          if (shell) return shell;
+        }
+        return new Response('Offline', { status: 503, statusText: 'Offline' });
       }
-      const res = await fresh;
-      if (res) return res;
-      if (req.mode === 'navigate') return cache.match('index.html');
-      return new Response('Offline', { status: 503, statusText: 'Offline' });
     })
   );
 });
