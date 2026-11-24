@@ -435,7 +435,7 @@ function accountSheet(mode) {
       <input type="hidden" name="mode" value="${up ? 'signup' : 'signin'}">
       <label class="field"><span>Email</span><input type="text" inputmode="email" name="email" autocomplete="email" autocapitalize="none" spellcheck="false" data-autofocus></label>
       <label class="field"><span>Password${up ? ' (at least 6 characters)' : ''}</span><input type="password" name="password" autocomplete="${up ? 'new-password' : 'current-password'}"></label>
-      ${up ? '<p class="note">Your data is saved to your account so it is backed up and the same on every device you sign in on. We send one email to confirm the address.</p>' : ''}
+      ${up ? '<p class="note">Your data is saved to your account so it is backed up and the same on every device you sign in on.</p>' : ''}
       <button class="btn">${up ? 'Create account' : 'Sign in'}</button>
       <button type="button" class="btn ghost" data-act="open-account" data-id="${up ? 'signin' : 'signup'}">${up ? 'I already have an account' : 'Create a new account'}</button>
       ${up ? '' : '<button type="button" class="link center" data-act="forgot">Forgot password?</button>'}
