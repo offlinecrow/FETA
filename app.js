@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '35';
+const APP_VERSION = '36';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -515,6 +515,7 @@ function accountSheet(mode) {
       <button type="button" class="btn ghost" data-act="open-account" data-id="${up ? 'signin' : 'signup'}">${up ? 'I already have an account' : 'Create a new account'}</button>
       ${up ? '' : '<button type="button" class="link center" data-act="forgot">Forgot password?</button>'}
     </form>`);
+  centerSheet();
 }
 
 function newPasswordSheet() {
@@ -523,6 +524,7 @@ function newPasswordSheet() {
       ${passwordField('New password (at least 6 characters)', 'new-password', true)}
       <button class="btn">Save password</button>
     </form>`);
+  centerSheet();
 }
 
 const validEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
@@ -538,9 +540,12 @@ async function submitAuth(f) {
     if (f.mode === 'signup') {
       const d = await sb('/auth/v1/signup', { method: 'POST', body: { email, password: f.password } });
       if (d && d.access_token) { setSession(d); await afterSignIn(); toast('Account created'); }
-      else openSheet('Check your email', `<p>We sent a confirmation link to ${esc(email)}. Open it, then come back to this app and sign in with your email and password.</p>
+      else {
+        openSheet('Check your email', `<p>We sent a confirmation link to ${esc(email)}. Open it, then come back to this app and sign in with your email and password.</p>
         <p class="note">On an iPhone the link opens in Safari. That is fine: return to the app from your home screen afterwards.</p>
         <button class="btn" data-act="open-account" data-id="signin">Sign in</button>`);
+        centerSheet();
+      }
     } else {
       setSession(await sb('/auth/v1/token?grant_type=password', { method: 'POST', body: { email, password: f.password } }));
       await afterSignIn();
@@ -723,6 +728,8 @@ function openSheet(title, body) {
   const focus = $('#sheet-root [data-autofocus]');
   if (focus) focus.focus();
 }
+// Shows the open pop-up in the middle of the screen instead of at the bottom.
+function centerSheet() { const el = $('#sheet-root .sheet'); if (el) el.classList.add('center'); }
 function closeSheet() { $('#sheet-root').innerHTML = ''; pendingConfirm = null; }
 
 function confirmSheet(title, message, label, fn) {
@@ -868,8 +875,7 @@ function welcomePointsSheet() {
       <span class="emoji" aria-hidden="true">${emoji}</span>
       <span class="row-main"><span class="name">${title}</span><span class="point-text">${text}</span></span></div>`).join('')}</div>
     <button class="btn ghost" data-act="close-sheet" style="margin-top:14px">Close</button>`);
-  // This one opens in the middle of the screen instead of sliding up from the bottom.
-  $('#sheet-root .sheet').classList.add('center');
+  centerSheet();
 }
 
 /* ---------- Home ---------- */
@@ -1923,6 +1929,7 @@ const actions = {
     try {
       await sb('/auth/v1/recover', { method: 'POST', body: { email } });
       openSheet('Check your email', `<p>If ${esc(email)} has an account, we sent it a link to set a new password.</p><button class="btn ghost" data-act="close-sheet">Close</button>`);
+      centerSheet();
     } catch (e) { toast(authMessage(e)); }
   },
   'sync-now': async () => { await syncNow(); render(); toast(sync.error ? syncStatus() : 'Synced'); },
