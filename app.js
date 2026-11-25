@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '42';
+const APP_VERSION = '50';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -21,6 +21,140 @@ const REGION_CURRENCY = { BD: 'BDT', US: 'USD', GB: 'GBP', IN: 'INR', PK: 'PKR',
   CN: 'CNY', HK: 'HKD', SG: 'SGD', MY: 'MYR', ID: 'IDR', PH: 'PHP', TH: 'THB', VN: 'VND', KR: 'KRW', CH: 'CHF', SE: 'SEK',
   NO: 'NOK', DK: 'DKK', PL: 'PLN', TR: 'TRY', ZA: 'ZAR', NG: 'NGN', KE: 'KES', GH: 'GHS', BR: 'BRL', MX: 'MXN', DE: 'EUR',
   FR: 'EUR', ES: 'EUR', IT: 'EUR', NL: 'EUR', IE: 'EUR', PT: 'EUR', BE: 'EUR', AT: 'EUR', FI: 'EUR', GR: 'EUR' };
+
+/* ---------- Languages ---------- */
+
+// The app is written in English. For the other languages, lang.js holds a list of every piece of text with its
+// translation, and whatever appears on screen is swapped for its translation as it is shown. Text with no
+// translation yet simply stays in English. The choice is kept on the device, so each phone can have its own.
+const LANGS = [['en', 'English'], ['hi', 'हिन्दी'], ['bn', 'বাংলা']];
+const LANG_KEY = 'budgetnest.lang';
+
+// First guess: Bangla in Bangladesh, Hindi in India (from the device's time zone), then the device's own language.
+function guessLang() {
+  let zone = '';
+  try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { /* unknown */ }
+  if (zone === 'Asia/Dhaka') return 'bn';
+  if (zone === 'Asia/Kolkata' || zone === 'Asia/Calcutta') return 'hi';
+  const own = (navigator.language || '').toLowerCase();
+  if (own.startsWith('bn')) return 'bn';
+  if (own.startsWith('hi')) return 'hi';
+  return 'en';
+}
+function storedLang() {
+  try { const v = localStorage.getItem(LANG_KEY); return LANGS.some(([id]) => id === v) ? v : ''; } catch (e) { return ''; }
+}
+let lang = storedLang() || guessLang();
+// Dates are written in the chosen language, with the same digits as the amounts.
+const LOCALE = () => ({ hi: 'hi-IN-u-nu-latn', bn: 'bn-BD-u-nu-latn' }[lang]);
+
+const langPack = () => (lang === 'en' ? null : (window.FETA_LANG || {})[lang] || null);
+let langCompiled = { lang: '', patterns: [], cache: new Map() };
+function langPatterns() {
+  if (langCompiled.lang === lang) return langCompiled;
+  const pack = langPack();
+  const esc = (v) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const strict = new Set((pack && pack.numbersOnly) || []);
+  const patterns = Object.entries((pack && pack.patterns) || {}).map(([from, to]) => {
+    const order = [];
+    const re = new RegExp('^' + from.split(/(\{\d\})/).map((part) => {
+      const m = /^\{(\d)\}$/.exec(part);
+      if (!m) return esc(part);
+      order.push(Number(m[1]));
+      return '(.+?)';
+    }).join('') + '$');
+    return { re, to, order, weight: from.replace(/\{\d\}/g, '').length, joined: from.includes(' · '), numbersOnly: strict.has(from) };
+  }).sort((a, b) => b.weight - a.weight);
+  langCompiled = { lang, patterns, cache: new Map() };
+  return langCompiled;
+}
+
+// Translates one piece of text. Sentences with changing parts (amounts, names, dates) are matched by their fixed words.
+function tr(text) {
+  const pack = langPack();
+  if (!pack || typeof text !== 'string' || !/[A-Za-z]/.test(text)) return text;
+  const { patterns, cache } = langPatterns();
+  if (cache.has(text)) return cache.get(text);
+  const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(text);
+  const core = m[2].replace(/\s+/g, ' ');
+  const joined = core.includes(' · ');
+  let found = null;
+  const word = pack.words && pack.words[core];
+  if (typeof word === 'string') found = word;
+  if (found == null) {
+    for (const p of patterns) {
+      // Text that is several facts joined by dots is only matched whole by a sentence written that way.
+      if (joined && !p.joined) continue;
+      const g = p.re.exec(core);
+      if (!g || (p.numbersOnly && !g.slice(1).every((v) => /\d/.test(v)))) continue;
+      const parts = {};
+      p.order.forEach((slot, i) => { parts[slot] = tr(g[i + 1]); });
+      found = p.to.replace(/\{(\d)\}/g, (all, slot) => (slot in parts ? parts[slot] : all));
+      break;
+    }
+  }
+  if (found == null && joined) {
+    // "Due 15 Nov · EMI 3 of 6": translate each fact on its own.
+    const parts = core.split(' · ');
+    const done = parts.map((part) => tr(part));
+    if (done.some((v, i) => v !== parts[i])) found = done.join(' · ');
+  }
+  if (found == null) {
+    // A symbol or emoji in front ("✓ Paid", "🏠 House", "+ Add"): translate the words after it.
+    const lead = /^([^\p{L}\p{N}]+\s)(.+)$/u.exec(core);
+    if (lead && tr(lead[2]) !== lead[2]) found = lead[1] + tr(lead[2]);
+  }
+  const out = found == null ? text : m[1] + found + m[3];
+  if (cache.size < 5000) cache.set(text, out);
+  return out;
+}
+
+const TR_ATTRS = ['placeholder', 'aria-label', 'title'];
+function trTree(node) {
+  if (node.nodeType === 3) {
+    // Never touch code, styles or what someone is typing.
+    const host = node.parentElement;
+    if (host && /^(SCRIPT|STYLE|TEXTAREA)$/.test(host.tagName)) return;
+    const next = tr(node.nodeValue);
+    if (next !== node.nodeValue) node.nodeValue = next;
+    return;
+  }
+  if (node.nodeType !== 1 || node.tagName === 'SCRIPT' || node.tagName === 'STYLE') return;
+  for (const a of TR_ATTRS) {
+    if (node.hasAttribute(a)) { const v = node.getAttribute(a); const next = tr(v); if (next !== v) node.setAttribute(a, next); }
+  }
+  for (const child of node.childNodes) trTree(child);
+}
+// Everything put on screen passes through here: pages, pop-ups and the short messages at the bottom.
+function watchLanguage() {
+  new MutationObserver((changes) => {
+    if (!langPack()) return;
+    for (const c of changes) {
+      if (c.type === 'characterData') trTree(c.target);
+      else for (const node of c.addedNodes) trTree(node);
+    }
+  }).observe(document.body, { childList: true, subtree: true, characterData: true });
+}
+function setLang(next) {
+  if (!LANGS.some(([id]) => id === next)) return;
+  lang = next;
+  try { localStorage.setItem(LANG_KEY, next); } catch (e) { /* ignore */ }
+  document.documentElement.lang = next;
+  fmtCache = {};
+}
+const langOptions = () => LANGS.map(([id, name]) => `<option value="${id}" ${id === lang ? 'selected' : ''}>${name}</option>`).join('');
+
+// The kinds of reminders, each with its own switch under More.
+const NOTIFY_KINDS = [
+  ['bills', 'Bills to pay', 'On the day a bill or instalment is due, and again if it is still unpaid 3 days later.'],
+  ['report', 'Monthly report', 'On the last evening of each month.'],
+  ['plans', 'Planner reminders', 'When the month you planned to buy something arrives, and the month before.'],
+  ['budget', 'Spending limits', 'When a category reaches 80% and 100% of its monthly limit.'],
+  ['debts', 'Money owed', 'On the due date of money you owe or are owed.'],
+  ['goals', 'Savings targets', 'When savings reach the target you set.'],
+  ['updates', 'App updates', 'Once a week while a newer Android app is waiting.']
+];
+const NOTIFY_EMOJI = { bills: '🧾', report: '📊', plans: '🎯', budget: '⚠️', debts: '🤝', goals: '🏆', updates: '⬇️' };
 
 const DEFAULT_CATEGORIES = [
   ['income', 'primary', 'Job salary', '💼'], ['income', 'primary', 'Business profit', '🏪'], ['income', 'primary', 'Rent received', '🏘️'],
@@ -66,6 +200,8 @@ const curYM = () => today().slice(0, 7);
 const addDays = (s, n) => { const d = toDate(s); d.setDate(d.getDate() + n); return iso(d); };
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(toDate(s).getTime());
 const isYM = (s) => typeof s === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
+// What a payment of a repeating item stands for: a month, or for a weekly item the day it was due.
+const isPeriod = (s) => isYM(s) || isDate(s);
 function addMonths(ym, n) {
   const [y, m] = ym.split('-').map(Number);
   const d = new Date(y, m - 1 + n, 1);
@@ -74,12 +210,14 @@ function addMonths(ym, n) {
 const monthsBetween = (a, b) => (b.slice(0, 4) - a.slice(0, 4)) * 12 + (b.slice(5, 7) - a.slice(5, 7));
 const daysInMonth = (ym) => { const [y, m] = ym.split('-').map(Number); return new Date(y, m, 0).getDate(); };
 const dateIn = (ym, day) => `${ym}-${pad(Math.min(Math.max(1, day), daysInMonth(ym)))}`;
-const ymLabel = (ym) => toDate(ym + '-01').toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
-const ymShort = (ym) => toDate(ym + '-01').toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
-const monthNameOf = (m) => new Date(2024, m - 1, 1).toLocaleDateString(undefined, { month: 'long' });
-const fmtDay = (s) => toDate(s).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
-const fmtDayLong = (s) => toDate(s).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-const fmtShort = (s) => toDate(s).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+const ymLabel = (ym) => toDate(ym + '-01').toLocaleDateString(LOCALE(), { month: 'long', year: 'numeric' });
+const ymShort = (ym) => toDate(ym + '-01').toLocaleDateString(LOCALE(), { month: 'short', year: 'numeric' });
+const monthNameOf = (m) => new Date(2024, m - 1, 1).toLocaleDateString(LOCALE(), { month: 'long' });
+// 0 is Sunday, as in Date.getDay().
+const weekdayNameOf = (d) => new Date(2024, 0, 7 + d).toLocaleDateString(LOCALE(), { weekday: 'long' });
+const fmtDay = (s) => toDate(s).toLocaleDateString(LOCALE(), { weekday: 'short', day: 'numeric', month: 'short' });
+const fmtDayLong = (s) => toDate(s).toLocaleDateString(LOCALE(), { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+const fmtShort = (s) => toDate(s).toLocaleDateString(LOCALE(), { day: 'numeric', month: 'short' });
 
 let fmtCache = {};
 function fmt(n) {
@@ -108,7 +246,7 @@ function defaultCategories() {
 function blankState() {
   return {
     version: 2,
-    settings: { currency: guessCurrency(), theme: 'auto', started: false },
+    settings: { currency: guessCurrency(), theme: 'auto', started: false, notify: {} },
     categories: [], transactions: [], recurring: [], emis: [], plans: [], debts: []
   };
 }
@@ -116,6 +254,9 @@ function blankState() {
 const validState = (s) => s && typeof s === 'object' && s.version === 2 && s.settings && typeof s.settings === 'object' && Array.isArray(s.transactions);
 
 // Rebuild stored or imported data field by field, so a damaged or hand-edited file cannot break the app.
+const FREQS = ['weekly', 'monthly', 'yearly'];
+const PER = { weekly: 'a week', monthly: 'a month', yearly: 'a year' };
+
 function sanitize(s) {
   const okId = (v) => typeof v === 'string' && /^[\w-]{1,40}$/.test(v);
   const ref = (v) => (okId(v) ? v : '');
@@ -129,6 +270,9 @@ function sanitize(s) {
   if (/^[A-Z]{3}$/.test(s.settings.currency)) out.settings.currency = s.settings.currency;
   if (['auto', 'light', 'dark'].includes(s.settings.theme)) out.settings.theme = s.settings.theme;
   out.settings.started = !!s.settings.started;
+  // Which kinds of reminders are switched off. Anything not listed is on.
+  const off = s.settings.notify && typeof s.settings.notify === 'object' ? s.settings.notify : {};
+  for (const [kind] of NOTIFY_KINDS) if (off[kind] === false) out.settings.notify[kind] = false;
   out.categories = arr(s.categories).map((c) => ({
     id: c.id, type: type(c.type), group: c.group === 'secondary' ? 'secondary' : 'primary',
     name: str(c.name, 40) || 'Category', emoji: str(c.emoji, 8), budget: pos(c.budget),
@@ -140,13 +284,15 @@ function sanitize(s) {
   out.transactions = arr(s.transactions).filter((t) => isDate(t.date)).map((t) => ({
     id: t.id, type: type(t.type), amount: Math.abs(num(t.amount)), categoryId: ref(t.categoryId), date: t.date,
     note: str(t.note, 120), created: num(t.created), recurringId: ref(t.recurringId), emiId: ref(t.emiId),
-    planId: ref(t.planId), period: isYM(t.period) ? t.period : ''
+    planId: ref(t.planId), period: isPeriod(t.period) ? t.period : ''
   }));
   out.recurring = arr(s.recurring).map((r) => ({
     id: r.id, type: type(r.type), name: str(r.name, 60) || 'Repeating item', amount: pos(r.amount), categoryId: ref(r.categoryId),
-    frequency: r.frequency === 'yearly' ? 'yearly' : 'monthly', day: day(r.day), month: Math.min(12, Math.max(1, Math.round(num(r.month)) || 1)),
+    frequency: FREQS.includes(r.frequency) ? r.frequency : 'monthly', day: day(r.day),
+    // Weekly items: the day of the week, and the first day they count from, so earlier weeks are not shown as unpaid.
+    weekday: Math.min(6, Math.max(0, Math.round(num(r.weekday)) || 0)), since: isDate(r.since) ? r.since : '', month: Math.min(12, Math.max(1, Math.round(num(r.month)) || 1)),
     start: isYM(r.start) ? r.start : curYM(), end: isYM(r.end) ? r.end : '', paused: !!r.paused,
-    skips: Array.isArray(r.skips) ? r.skips.filter(isYM) : [], note: str(r.note, 120),
+    skips: Array.isArray(r.skips) ? r.skips.filter(isPeriod) : [], note: str(r.note, 120),
     // Amount changes: from the given month onward the item costs the new amount.
     changes: (Array.isArray(r.changes) ? r.changes : []).filter((c) => c && isYM(c.from) && pos(c.amount) > 0)
       .map((c) => ({ from: c.from, amount: pos(c.amount) })).sort((a, b) => (a.from < b.from ? -1 : 1))
@@ -464,7 +610,7 @@ function syncStatus() {
   if (sync.error === 'offline') return 'Offline. Changes are saved on this device and will sync when you are back online.';
   if (sync.error) return `Could not sync: ${sync.error}`;
   if (sync.dirty) return 'Changes waiting to sync.';
-  return sync.last ? `Synced ${new Date(sync.last).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}` : 'Not synced yet.';
+  return sync.last ? `Synced ${new Date(sync.last).toLocaleString(LOCALE(), { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}` : 'Not synced yet.';
 }
 
 function startApp() {
@@ -596,6 +742,11 @@ function androidVersion() {
   try { return android && android.versionCode ? Number(android.versionCode()) || 1 : 1; } catch (e) { return 1; }
 }
 
+// Newer Android apps download and install the update themselves; older ones can only open the download in the browser.
+const androidInApp = () => !!(android && android.updateStart && android.updateInstall);
+// stage: 'offer' (nothing downloaded yet), 'downloading', 'ready' (downloaded, waiting for the person to tap Update).
+const updateUi = { stage: 'offer', pct: 0, error: '', later: false };
+
 async function checkAndroidUpdate() {
   if (!android) return;
   try {
@@ -607,16 +758,65 @@ async function checkAndroidUpdate() {
     const next = newer ? { name: String(info.versionName || '').slice(0, 20), url } : null;
     const changed = !!next !== !!androidUpdate;
     androidUpdate = next;
-    if (changed && !$('#sheet-root').firstChild) render();
+    if (next && androidInApp() && updateUi.stage === 'offer') {
+      let now = '';
+      try { now = android.updateState ? String(android.updateState()) : ''; } catch (e) { /* treat as not started */ }
+      if (now === 'ready' || now === 'downloading') updateUi.stage = now;
+    }
+    if (changed && !$('#sheet-root').firstChild) {
+      render();
+      // On entering the app, say so once. "Later" keeps it quiet until the app is opened again.
+      if (next && !updateUi.later) androidUpdateSheet();
+    }
   } catch (e) { /* offline: try again next time */ }
 }
 
+function androidUpdateSheet() {
+  if (!androidUpdate) return;
+  const name = androidUpdate.name ? ` ${esc(androidUpdate.name)}` : '';
+  const pct = updateUi.pct >= 0 ? Math.min(100, updateUi.pct) : -1;
+  let body;
+  if (updateUi.stage === 'downloading') {
+    body = `<p>Downloading the update${pct >= 0 ? `… ${pct}%` : '…'}</p>
+      <span class="rank-track" style="margin-bottom:14px"><span class="rank-bar" style="display:block;width:${pct >= 0 ? pct : 100}%"></span></span>
+      <p class="note">Keep FETA open until it finishes.</p>`;
+  } else if (updateUi.stage === 'ready') {
+    body = `<p>The update is downloaded and ready.</p>
+      <p class="note">Tap Update. Android asks you to confirm, replaces the app, and FETA opens again. You stay signed in and your data stays as it is.</p>
+      <button class="btn" data-act="android-install">Update</button>
+      <button class="btn ghost" data-act="android-later">Later</button>`;
+  } else {
+    body = `${updateUi.error ? `<p class="over">${esc(updateUi.error)}</p>` : ''}
+      <p>A new version of the Android app${name} is ready.</p>
+      <p class="note">${androidInApp() ? 'It downloads inside FETA. You stay signed in and your data stays as it is.' : 'When the download finishes, open it and choose Install. Your data stays as it is.'}</p>
+      <button class="btn" data-act="android-download">${updateUi.error ? 'Try again' : 'Download'}</button>
+      <button class="btn ghost" data-act="android-later">Later</button>`;
+  }
+  openSheet('Update available', `<div data-update hidden></div>${body}`);
+  centerSheet();
+}
+
+// Called by the Android app while it downloads: ('progress', percent), ('ready') or ('error', reason).
+window.fetaUpdate = (state, value) => {
+  if (state === 'progress') { updateUi.stage = 'downloading'; updateUi.pct = Number(value); updateUi.error = ''; }
+  else if (state === 'ready') { updateUi.stage = 'ready'; updateUi.error = ''; }
+  else if (state === 'error') { updateUi.stage = 'offer'; updateUi.error = String(value || 'The download did not finish.'); }
+  else return;
+  // Keep the card on Home and More in step, then the pop-up.
+  if (state !== 'progress') render();
+  const open = $('#sheet-root').firstChild;
+  // Refresh the update pop-up if it is showing. When the download ends and nothing else is open, show it again.
+  if ($('#sheet-root [data-update]') || (!open && state !== 'progress')) androidUpdateSheet();
+  else if (!open) render();
+};
+
 function androidUpdateCard() {
   if (!androidUpdate) return '';
+  const stage = updateUi.stage;
   return `<section class="card">
     <div class="name" style="white-space:normal">A new version of the Android app is ready${androidUpdate.name ? ` (${esc(androidUpdate.name)})` : ''}</div>
-    <p class="note" style="margin:6px 0 14px">Tap Update. When the download finishes, open it and choose Install. Your data stays as it is.</p>
-    <button class="btn" data-act="android-update">Update</button>
+    <p class="note" style="margin:6px 0 14px">${stage === 'ready' ? 'It is downloaded. Tap Update to install it.' : stage === 'downloading' ? 'It is downloading.' : 'Tap Update to get it.'} Your data stays as it is.</p>
+    <button class="btn" data-act="android-update">${stage === 'downloading' ? `Downloading${updateUi.pct >= 0 ? `… ${Math.min(100, updateUi.pct)}%` : '…'}` : 'Update'}</button>
   </section>`;
 }
 
@@ -667,43 +867,213 @@ function dueItems(ym) {
   for (const r of state.recurring) {
     if (r.start > ym || (r.end && ym > r.end)) continue;
     if (r.frequency === 'yearly' && r.month !== month) continue;
-    const paid = state.transactions.find((t) => t.recurringId === r.id && t.period === ym) || null;
-    if (r.paused && !paid) continue;
-    items.push({ key: 'rec:' + r.id, kind: 'rec', ref: r, name: r.name, type: r.type, amount: recAmount(r, ym), categoryId: r.categoryId,
-      date: dateIn(ym, r.day), paid, skipped: !paid && r.skips.includes(ym) });
+    // A weekly item is due once for every time its weekday falls in the month. Each of those is paid or skipped on its own.
+    const weekly = r.frequency === 'weekly';
+    const dates = !weekly ? [dateIn(ym, r.day)]
+      : Array.from({ length: daysInMonth(ym) }, (_, i) => dateIn(ym, i + 1)).filter((d) => toDate(d).getDay() === r.weekday && d >= (r.since || ''));
+    for (const date of dates) {
+      const period = weekly ? date : ym;
+      const paid = state.transactions.find((t) => t.recurringId === r.id && t.period === period) || null;
+      if (r.paused && !paid) continue;
+      items.push({ key: 'rec:' + r.id + (weekly ? ':' + date : ''), kind: 'rec', ref: r, name: r.name, type: r.type, amount: recAmount(r, ym), categoryId: r.categoryId,
+        date, period, weekly, paid, skipped: !paid && r.skips.includes(period) });
+    }
   }
   for (const e of state.emis) {
     const i = monthsBetween(e.start, ym);
     if (i < e.paidBefore || i >= e.tenure) continue;
     const paid = state.transactions.find((t) => t.emiId === e.id && t.period === ym) || null;
     items.push({ key: 'emi:' + e.id, kind: 'emi', ref: e, name: e.name, type: 'expense', amount: e.monthly, categoryId: e.categoryId,
-      date: dateIn(ym, e.day), paid, skipped: false, seq: i + 1 });
+      date: dateIn(ym, e.day), period: ym, paid, skipped: false, seq: i + 1 });
   }
   return items.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 // A bill is Unpaid from the first day of its month until it is marked paid, whatever its due day.
 // Months that have not started yet are only "Upcoming". Expected income is never shown as unpaid.
+// A weekly bill is Unpaid from its own day, so the weeks still to come do not all show red at once.
 function dueStatus(it) {
   if (it.paid) return 'done';
   if (it.skipped) return 'skipped';
   if (it.type === 'income') return 'expected';
-  return it.date.slice(0, 7) > curYM() ? 'upcoming' : 'unpaid';
+  return (it.weekly ? it.date > today() : it.date.slice(0, 7) > curYM()) ? 'upcoming' : 'unpaid';
 }
 const isOpen = (it) => !it.paid && !it.skipped;
 
 // Opens the right sheet for one due item: its payment if already paid, otherwise a pre-filled entry for that month.
 function openDue(it, ym) {
   if (it.paid) return txSheet(it.paid);
-  if (it.skipped) { it.ref.skips = it.ref.skips.filter((m) => m !== ym); save(); render(); return toast('Back on the list'); }
+  if (it.skipped) { it.ref.skips = it.ref.skips.filter((m) => m !== it.period); save(); render(); return toast('Back on the list'); }
   const income = it.type === 'income';
   txSheet(null, { title: `${income ? 'Received' : it.type === 'saving' ? 'Save' : 'Pay'}: ${it.name}`, cta: income ? 'Mark as received' : 'Mark as paid',
     type: it.type, amount: it.amount, categoryId: it.categoryId, note: it.name, date: ym === curYM() ? today() : it.date,
-    recurringId: it.kind === 'rec' ? it.ref.id : '', emiId: it.kind === 'emi' ? it.ref.id : '', period: ym, canSkip: it.kind === 'rec' });
+    recurringId: it.kind === 'rec' ? it.ref.id : '', emiId: it.kind === 'emi' ? it.ref.id : '', period: it.period, canSkip: it.kind === 'rec' });
 }
 
 const debtPaid = (d) => sum(d.payments, (p) => p.amount);
 const debtLeft = (d) => (d.settled ? 0 : Math.max(0, r3(d.amount - debtPaid(d))));
 const debtTotal = (kind) => sum(state.debts.filter((d) => d.kind === kind), debtLeft);
+
+/* ---------- Reminders ---------- */
+
+// Everything FETA would remind about, worked out from the data: what happened already and what is coming in the next weeks.
+// The bell on Home lists the ones whose time has come. The Android app is handed the whole list and shows each one
+// as a phone notification at its time, also when FETA is closed.
+const SEEN_KEY = 'budgetnest.seen';
+const atHour = (date, hour) => { const d = toDate(date); d.setHours(hour, 0, 0, 0); return d.getTime(); };
+
+function buildNotices() {
+  if (!state.settings.started) return [];
+  const off = state.settings.notify || {};
+  const want = (kind) => off[kind] !== false;
+  const now = Date.now();
+  const ymNow = curYM();
+  const list = [];
+  const add = (kind, id, at, title, body, tab, month) => list.push({ kind, id, at, title, body, tab, month: month || '' });
+
+  if (want('bills')) {
+    for (const ym of [ymNow, addMonths(ymNow, 1)]) {
+      for (const it of dueItems(ym)) {
+        if (it.type === 'income' || !isOpen(it)) continue;
+        const what = it.kind === 'emi' ? `${it.name} (instalment ${it.seq} of ${it.ref.tenure})` : it.name;
+        const late = atHour(addDays(it.date, 3), 9);
+        // Once the "still unpaid" reminder has come, it replaces the "due today" one.
+        if (now < late) add('bills', `due:${it.key}:${ym}`, atHour(it.date, 9), `${what} is due today`, `${fmt(it.amount)} to pay.`, 'home', ym);
+        add('bills', `late:${it.key}:${ym}`, late, `${what} is still unpaid`, `${fmt(it.amount)} was due on ${fmtShort(it.date)}.`, 'home', ym);
+      }
+    }
+  }
+
+  if (want('report')) {
+    for (const ym of [addMonths(ymNow, -1), ymNow]) {
+      const at = atHour(dateIn(ym, 31), 20);
+      const t = totalsOf(txInMonth(ym));
+      const past = at <= now;
+      if (past && !(t.income || t.expense || t.saving)) continue;
+      add('report', `report:${ym}`, at, `Your ${ymLabel(ym)} report is ready`,
+        past ? `Income ${fmt(t.income)} · spent ${fmt(t.expense)} · saved ${fmt(t.saving)} · left ${fmt(t.balance)}.` : 'See where your money went this month.', 'reports', ym);
+    }
+  }
+
+  if (want('plans')) {
+    const open = state.plans.filter((p) => !p.done);
+    for (const p of open.filter((x) => isYM(x.target))) {
+      const price = p.price > 0 ? `About ${fmt(p.price)}.` : 'Open the planner to see it.';
+      add('plans', `plan:${p.id}:${p.target}:before`, atHour(addMonths(p.target, -1) + '-01', 9), `${p.name} is planned for next month`, price, 'planner');
+      add('plans', `plan:${p.id}:${p.target}`, atHour(p.target + '-01', 9), `You planned to buy ${p.name} this month`, price, 'planner');
+    }
+    const loose = open.filter((x) => !isYM(x.target));
+    if (loose.length) {
+      const names = loose.slice(0, 3).map((x) => x.name).join(', ') + (loose.length > 3 ? ` and ${loose.length - 3} more` : '');
+      for (const ym of [ymNow, addMonths(ymNow, 1)]) add('plans', `plans:${ym}`, atHour(ym + '-01', 10), 'Still on your plan list', names, 'planner');
+    }
+  }
+
+  if (want('budget')) {
+    const spent = {};
+    for (const t of txInMonth(ymNow)) if (t.type === 'expense') spent[t.categoryId] = r3((spent[t.categoryId] || 0) + t.amount);
+    for (const c of catsOf('expense')) {
+      if (!(c.budget > 0)) continue;
+      const used = spent[c.id] || 0;
+      if (used >= c.budget) add('budget', `limit:${c.id}:${ymNow}:100`, now, `${c.name} is over its limit`, `${fmt(used)} spent of the ${fmt(c.budget)} limit this month.`, 'reports', ymNow);
+      else if (used >= c.budget * 0.8) add('budget', `limit:${c.id}:${ymNow}:80`, now, `${c.name} is close to its limit`, `${fmt(used)} spent of ${fmt(c.budget)}. ${fmt(r3(c.budget - used))} left this month.`, 'reports', ymNow);
+    }
+  }
+
+  if (want('debts')) {
+    for (const d of state.debts) {
+      const left = debtLeft(d);
+      if (!isDate(d.due) || !(left > 0)) continue;
+      add('debts', `debt:${d.id}:${d.due}`, atHour(d.due, 9), d.kind === 'payable' ? `You owe ${d.person} ${fmt(left)}` : `${d.person} owes you ${fmt(left)}`, `Due ${fmtDay(d.due)}.`, 'planner');
+    }
+  }
+
+  if (want('goals')) {
+    const saved = {};
+    for (const t of state.transactions) if (t.type === 'saving') saved[t.categoryId] = r3((saved[t.categoryId] || 0) + t.amount);
+    for (const c of catsOf('saving')) {
+      const have = r3((saved[c.id] || 0) + (c.opening || 0));
+      if (c.target > 0 && have >= c.target) add('goals', `goal:${c.id}:${c.target}`, now, `${c.name} reached its target`, `${fmt(have)} saved. The target was ${fmt(c.target)}.`, 'savings');
+    }
+  }
+
+  if (want('updates') && androidUpdate) {
+    const name = androidUpdate.name || 'new';
+    const body = 'Open FETA and tap Update. You stay signed in.';
+    add('updates', `update:${name}`, now, 'A new version of FETA is ready', body, 'update');
+    list[list.length - 1].inAppOnly = true;
+    for (let week = 1; week <= 4; week++) add('updates', `update:${name}:${week}`, atHour(addDays(today(), 7 * week), 10), 'A new version of FETA is ready', body, 'update');
+  }
+
+  // Nothing older than five weeks, nothing further ahead than six.
+  return list.filter((n) => n.at > now - 35 * 864e5 && n.at < now + 42 * 864e5).sort((a, b) => a.at - b.at);
+}
+
+const currentNotices = () => { const now = Date.now(); return buildNotices().filter((n) => n.at <= now).reverse(); };
+function seenNotices() {
+  try { const v = JSON.parse(localStorage.getItem(SEEN_KEY)); return new Set(Array.isArray(v) ? v : []); } catch (e) { return new Set(); }
+}
+const unreadCount = () => { const seen = seenNotices(); return currentNotices().filter((n) => !seen.has(n.id)).length; };
+
+function noticesSheet() {
+  const list = currentNotices();
+  const seen = seenNotices();
+  openSheet('Notifications', `
+    <div class="list">${list.length ? list.map((n) => `<button class="row" data-act="notice-go" data-id="${esc(n.tab)}" data-month="${esc(n.month)}">
+      <span class="emoji" aria-hidden="true">${NOTIFY_EMOJI[n.kind] || '🔔'}</span>
+      <span class="row-main"><span class="row-top"><span class="name" style="white-space:normal">${esc(n.title)}</span>${seen.has(n.id) ? '' : '<span class="pill">New</span>'}</span>
+      <span class="row-sub" style="white-space:normal">${esc(n.body)}</span></span></button>`).join('')
+      : '<div class="empty">Nothing to tell you right now. Bills that are due, the monthly report, planner reminders and app updates show up here.</div>'}</div>
+    <button class="btn ghost" data-act="notice-go" data-id="more">Choose what to be notified about</button>`);
+  // Opening the list counts as having read it.
+  try { localStorage.setItem(SEEN_KEY, JSON.stringify(list.map((n) => n.id))); } catch (e) { /* ignore */ }
+  const bell = $('.bell .badge');
+  if (bell) bell.remove();
+}
+
+// Called by the Android app when a notification is tapped, and by the list above.
+window.fetaGo = (tab, month) => {
+  if (!state.settings.started) return;
+  closeSheet();
+  if (tab === 'update') { ui.tab = 'home'; render(); if (androidUpdate) androidUpdateSheet(); return; }
+  if (!['home', 'bills', 'savings', 'reports', 'planner', 'more'].includes(tab)) return;
+  ui.tab = tab; ui.bar = null;
+  if (tab === 'home') { ui.home = 'month'; if (isYM(month)) ui.month = month; }
+  if (tab === 'reports' && isYM(month)) { ui.rep.period = 'month'; ui.rep.cursor = month + '-01'; }
+  render(); window.scrollTo(0, 0);
+};
+
+const notifyState = () => { try { return android && android.notifyState ? String(android.notifyState()) : ''; } catch (e) { return ''; } };
+// The Android app tells the page when the phone's notification permission changed.
+window.fetaNotifyChanged = () => { queueNotify(); if (ui.tab === 'more' && !$('#sheet-root').firstChild) render(); };
+
+// Hands the reminders to the Android app a moment after the data last changed.
+let notifyTimer = null;
+function queueNotify() {
+  if (!android || !android.notifySchedule) return;
+  clearTimeout(notifyTimer);
+  notifyTimer = setTimeout(() => {
+    const now = Date.now();
+    const items = buildNotices().filter((n) => !n.inAppOnly && n.at > now - 12 * 36e5).slice(0, 80)
+      .map((n) => ({ id: n.id, at: n.at, title: tr(n.title), body: tr(n.body), tab: n.tab, month: n.month }));
+    try { android.notifySchedule(JSON.stringify(items)); } catch (e) { /* the app is too old for reminders */ }
+  }, 900);
+}
+
+function notifyCard() {
+  const off = state.settings.notify || {};
+  const st = notifyState();
+  const phone = !android || !android.notifySchedule
+    ? `<p class="note" style="margin:0 0 14px">On this device, reminders show inside FETA: tap the bell on Home. Notifications on the phone itself need the FETA Android app.</p>`
+    : st === 'granted' ? '<p class="note" style="margin:0 0 14px">✓ This phone shows FETA’s notifications, also when the app is closed.</p>'
+      : `<p class="note" style="margin:0 0 10px">This phone is not showing FETA’s notifications yet.</p>
+        <button class="btn" data-act="notify-ask" style="margin-bottom:14px">Turn on notifications</button>`;
+  return `<div class="sec-head"><h2>Notifications</h2></div>
+    <section class="card">
+      ${phone}
+      ${NOTIFY_KINDS.map(([kind, label, hint]) => `<label class="check notify-row"><input type="checkbox" data-notify="${kind}" ${off[kind] === false ? '' : 'checked'}>
+        <span><span class="name">${label}</span><span class="row-sub" style="white-space:normal;display:block">${hint}</span></span></label>`).join('')}
+    </section>`;
+}
 
 /* ---------- Theme, toast, sheets ---------- */
 
@@ -714,12 +1084,13 @@ function applyTheme() {
 }
 
 let toastTimer;
-function toast(msg) {
+// A message stays long enough to be read: 3 seconds, or longer when asked.
+function toast(msg, ms = 3000) {
   const el = $('#toast');
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+  toastTimer = setTimeout(() => el.classList.remove('show'), Math.max(3000, ms));
 }
 
 function openSheet(title, body) {
@@ -760,6 +1131,7 @@ function fabHtml() {
 
 function render() {
   const app = $('#app');
+  queueNotify();
   if (!state.settings.started) { app.innerHTML = viewWelcome(); return; }
   const views = { home: viewHome, bills: viewBills, savings: viewSavings, reports: viewReports, planner: viewPlanner, more: viewMore };
   const tabs = [['home', 'Home'], ['bills', 'Bills'], ['savings', 'Savings'], ['reports', 'Reports'], ['planner', 'Planner'], ['more', 'More']];
@@ -780,6 +1152,7 @@ function render() {
   if (from !== index) {
     requestAnimationFrame(() => requestAnimationFrame(() => { const pill = $('.tab-pill'); if (pill) pill.style.setProperty('--i', index); }));
   }
+  slidePills();
 }
 let lastTabIndex = null;
 
@@ -799,9 +1172,22 @@ function catOptions(type, selected) {
   }).join('');
 }
 
+// A switch between a few choices, drawn like the bottom bar: a glass capsule sits under the chosen one and slides
+// to the new choice when it changes. Each switch remembers where its capsule was, so it can start the slide from there.
+const segLast = {};
 function segButtons(act, options, current) {
-  return `<div class="seg" style="grid-template-columns:repeat(${options.length},1fr)">${options.map(([v, l]) =>
+  const to = Math.max(0, options.findIndex(([v]) => v === current));
+  const from = act in segLast ? segLast[act] : to;
+  segLast[act] = to;
+  return `<div class="seg" style="--n:${options.length};grid-template-columns:repeat(${options.length},1fr)">
+    <i class="seg-pill" style="--i:${from}" ${from === to ? '' : `data-to="${to}"`} aria-hidden="true"></i>${options.map(([v, l]) =>
     `<button type="button" class="${v === current ? 'on' : ''}" data-act="${act}" data-id="${v}" aria-pressed="${v === current}">${l}</button>`).join('')}</div>`;
+}
+// Starts the slide of every capsule that was drawn at its old place.
+function slidePills() {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    for (const pill of document.querySelectorAll('.seg-pill[data-to]')) { pill.style.setProperty('--i', pill.dataset.to); pill.removeAttribute('data-to'); }
+  }));
 }
 
 function monthNav(ym, act) {
@@ -862,7 +1248,10 @@ function viewWelcome() {
       <p class="tagline">Family Expense Tracker App</p>
       <p class="lead">A simple way to track your family’s money. Note your income and spending as it happens, and always know what is left for the month.</p>
       <button class="link welcome-more" data-act="welcome-points">What you can do <span aria-hidden="true">›</span></button>
-      <label class="field"><span>Your currency</span><select data-setting="currency">${currencyOptions(state.settings.currency)}</select></label>
+      <div class="two">
+        <label class="field"><span>Language</span><select data-lang>${langOptions()}</select></label>
+        <label class="field"><span>Your currency</span><select data-setting="currency">${currencyOptions(state.settings.currency)}</select></label>
+      </div>
       <button class="btn" data-act="open-account" data-id="signup">Create an account</button>
       <button class="btn ghost" data-act="open-account" data-id="signin">I already have an account</button>
       <p class="note">Your data is backed up online in your account and stays the same on every device you sign in on.</p>
@@ -891,7 +1280,12 @@ function homeListHtml() {
   return txGroups(list, q || ui.filter !== 'all' ? 'Nothing matches.' : 'Nothing recorded for this month yet. Tap + to add income, an expense or savings.');
 }
 
-const homeSwitch = () => segButtons('home-mode', [['month', 'Month report'], ['year', 'Year report']], ui.home);
+const BELL_ICON = '<svg viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20a2 2 0 0 0 4 0"/></svg>';
+function homeSwitch() {
+  const n = unreadCount();
+  return `<div class="home-top">${segButtons('home-mode', [['month', 'Month report'], ['year', 'Year report']], ui.home)}
+    <button class="bell" data-act="notices" aria-label="Notifications${n ? `, ${n} new` : ''}">${BELL_ICON}${n ? `<i class="badge">${n}</i>` : ''}</button></div>`;
+}
 
 // The whole year at a glance: totals, then one line per month. Tapping a month opens it.
 // A ring showing how much of the income has been spent. It is green when little is spent and turns red as it nears 100%.
@@ -939,7 +1333,7 @@ function viewHomeYear() {
     <section class="card">
       <div class="sec-head" style="margin-top:0"><h2>Month by month</h2></div>
       ${active.length ? `<table class="tbl"><thead><tr><th>Month</th><th>In</th><th>Out</th><th>Saved</th><th>Left</th></tr></thead><tbody>
-        ${active.map((r) => `<tr data-act="home-month" data-id="${r.ym}"><td>${toDate(r.ym + '-01').toLocaleDateString(undefined, { month: 'short' })}</td>
+        ${active.map((r) => `<tr data-act="home-month" data-id="${r.ym}"><td>${toDate(r.ym + '-01').toLocaleDateString(LOCALE(), { month: 'short' })}</td>
           <td>${fmtK(r.t.income)}</td><td>${fmtK(r.t.expense)}</td><td>${fmtK(r.t.saving)}</td><td class="${r.t.balance < 0 ? 'over' : ''}">${fmtK(r.t.balance)}</td></tr>`).join('')}
         <tr class="tbl-total"><td>Total</td><td>${fmtK(t.income)}</td><td>${fmtK(t.expense)}</td><td>${fmtK(t.saving)}</td><td class="${t.balance < 0 ? 'over' : ''}">${fmtK(t.balance)}</td></tr>
         </tbody></table><p class="note" style="margin:10px 0 0">Tap a month to open it.</p>`
@@ -1011,12 +1405,12 @@ function dueRow(it) {
   const st = dueStatus(it);
   const c = cat(it.categoryId);
   const pill = { done: it.type === 'income' ? '✓ Received' : '✓ Paid', unpaid: '⚠ Unpaid', upcoming: 'Upcoming', expected: 'Expected', skipped: 'Skipped' }[st];
-  const when = it.paid ? `${it.type === 'income' ? 'Received' : 'Paid'} ${fmtShort(it.paid.date)}` : st === 'skipped' ? 'Not this month' : `Due ${fmtShort(it.date)}`;
+  const when = it.paid ? `${it.type === 'income' ? 'Received' : 'Paid'} ${fmtShort(it.paid.date)}` : st === 'skipped' ? (it.weekly ? 'Not this week' : 'Not this month') : `Due ${fmtShort(it.date)}`;
   return `<button class="row ${st === 'unpaid' ? 'is-unpaid' : ''}" data-act="due" data-key="${it.key}">
     <span class="emoji" aria-hidden="true">${esc((c && c.emoji) || '•')}</span>
     <span class="row-main">
       <span class="row-top"><span class="name">${esc(it.name)}</span><span class="amt">${fmt(it.paid ? it.paid.amount : it.amount)}</span></span>
-      <span class="row-top"><span class="row-sub">${when}${it.kind === 'emi' ? ` · EMI ${it.seq} of ${it.ref.tenure}` : it.ref.frequency === 'yearly' ? ' · yearly' : ''}</span><span class="pill ${st}">${pill}</span></span>
+      <span class="row-top"><span class="row-sub">${when}${it.kind === 'emi' ? ` · EMI ${it.seq} of ${it.ref.tenure}` : it.ref.frequency !== 'monthly' ? ` · ${it.ref.frequency}` : ''}</span><span class="pill ${st}">${pill}</span></span>
     </span></button>`;
 }
 
@@ -1033,7 +1427,8 @@ function emiRow(e) {
 }
 
 function recurLine(r) {
-  const when = r.frequency === 'yearly' ? `every year on ${r.day} ${monthNameOf(r.month)}` : `every month on day ${r.day}`;
+  const when = r.frequency === 'weekly' ? `every week on ${weekdayNameOf(r.weekday)}`
+    : r.frequency === 'yearly' ? `every year on ${r.day} ${monthNameOf(r.month)}` : `every month on day ${r.day}`;
   const next = (r.changes || []).find((c) => c.from > curYM());
   return `${fmt(recAmount(r, curYM()))} · ${when}${next ? ` · ${fmt(next.amount)} from ${ymShort(next.from)}` : ''}${r.paused ? ' · paused' : ''}`;
 }
@@ -1105,7 +1500,7 @@ function viewUpcoming() {
         ${m.out.length ? m.out.map((it) => `<div class="row">
           <span class="emoji" aria-hidden="true">${esc((cat(it.categoryId) || {}).emoji || '•')}</span>
           <span class="row-main"><span class="row-top"><span class="name">${esc(it.name)}</span><span class="amt">${fmt(it.paid ? it.paid.amount : it.amount)}</span></span>
-          <span class="row-sub">${it.paid ? '✓ Already paid' : `Due ${fmtShort(it.date)}`}${it.kind === 'emi' ? ` · EMI ${it.seq} of ${it.ref.tenure}` : it.type === 'saving' ? ' · savings' : it.ref.frequency === 'yearly' ? ' · yearly' : ''}</span></span></div>`).join('')
+          <span class="row-sub">${it.paid ? '✓ Already paid' : `Due ${fmtShort(it.date)}`}${it.kind === 'emi' ? ` · EMI ${it.seq} of ${it.ref.tenure}` : it.type === 'saving' ? ' · savings' : it.ref.frequency !== 'monthly' ? ` · ${it.ref.frequency}` : ''}</span></span></div>`).join('')
           : '<div class="empty">Nothing preset for this month.</div>'}
         ${m.out.length ? `<div class="row total"><span class="row-main"><span class="row-top"><span class="name">Total · ${plural(m.out.length, 'item')}</span><span class="amt">${fmt(m.total)}</span></span>
           ${m.income ? `<span class="row-sub">Expected income ${fmt(m.income)} · ${fmt(m.income - m.total)} left after these</span>` : ''}</span></div>` : ''}
@@ -1253,7 +1648,7 @@ function viewReports() {
       .filter((r) => r.t.income || r.t.expense || r.t.saving);
     yearTable = `<section class="card"><div class="sec-head" style="margin-top:0"><h2>Month by month</h2></div>
       ${rows.length ? `<table class="tbl"><thead><tr><th>Month</th><th>In</th><th>Out</th><th>Saved</th><th>Left</th></tr></thead><tbody>
-        ${rows.map((r) => `<tr data-act="rep-goto" data-id="${r.ym}-01"><td>${toDate(r.ym + '-01').toLocaleDateString(undefined, { month: 'short' })}</td>
+        ${rows.map((r) => `<tr data-act="rep-goto" data-id="${r.ym}-01"><td>${toDate(r.ym + '-01').toLocaleDateString(LOCALE(), { month: 'short' })}</td>
           <td>${fmtK(r.t.income)}</td><td>${fmtK(r.t.expense)}</td><td>${fmtK(r.t.saving)}</td><td class="${r.t.balance < 0 ? 'over' : ''}">${fmtK(r.t.balance)}</td></tr>`).join('')}
         </tbody></table><p class="note" style="margin:10px 0 0">Tap a month to open it.</p>` : '<div class="empty">Nothing recorded this year.</div>'}
     </section>`;
@@ -1374,8 +1769,10 @@ function viewMore() {
     ${catList('Expense categories', catsOf('expense'), 'expense')}
     ${catList('Savings categories', catsOf('saving'), 'saving')}
 
+    ${notifyCard()}
     <div class="sec-head"><h2>Settings</h2></div>
     <section class="card">
+      <label class="field"><span>Language</span><select data-lang>${langOptions()}</select></label>
       <label class="field"><span>Currency</span><select data-setting="currency">${currencyOptions(state.settings.currency)}</select></label>
       <label class="field" style="margin-bottom:0"><span>Appearance</span><select data-setting="theme">
         ${[['auto', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => `<option value="${v}" ${th === v ? 'selected' : ''}>${l}</option>`).join('')}
@@ -1387,7 +1784,6 @@ function viewMore() {
       <button class="btn" data-act="backup">Save a backup file</button>
       <label class="btn ghost" style="text-align:center;margin-top:10px">Restore from a backup<input type="file" id="restore-file" accept="application/json,.json" class="hidden"></label>
       <button class="btn ghost" data-act="export-csv">Export transactions (CSV)</button>
-      <button class="btn danger" data-act="erase">Erase everything</button>
     </section>
     ${window.FetaAndroid ? '' : `<div class="sec-head"><h2>Put it on your home screen</h2></div>
     <section class="card"><p class="note" style="margin:0">In Safari, tap the Share button, then “Add to Home Screen”. The app then opens full screen and works without internet.</p></section>`}
@@ -1421,8 +1817,8 @@ function monthPicker(label, name, value, optional) {
 const pickedMonth = (f, name) => (f[name + 'M'] && f[name + 'Y'] ? `${f[name + 'Y']}-${pad(Number(f[name + 'M']))}` : '');
 
 function typeRadios(current, types = TYPES) {
-  return `<div class="seg" role="radiogroup" aria-label="Type" style="grid-template-columns:repeat(${types.length},1fr)">
-    ${types.map((v) => `<label><input type="radio" name="type" value="${v}" ${v === current ? 'checked' : ''}><span>${TYPE_LABEL[v]}</span></label>`).join('')}</div>`;
+  return `<div class="seg" role="radiogroup" aria-label="Type" style="--n:${types.length};grid-template-columns:repeat(${types.length},1fr)">
+    <i class="seg-pill" aria-hidden="true"></i>${types.map((v) => `<label><input type="radio" name="type" value="${v}" ${v === current ? 'checked' : ''}><span>${TYPE_LABEL[v]}</span></label>`).join('')}</div>`;
 }
 
 const NEW_CAT = '__new';
@@ -1455,7 +1851,7 @@ function txSheet(tx, preset = {}) {
           `<label><input type="radio" name="newCatEmoji" value="${e}"><span>${e}</span></label>`).join('')}</div></div>
       </div>
       <button class="btn">${tx ? 'Save changes' : preset.cta || 'Add'}</button>
-      ${!tx && preset.canSkip ? `<button type="button" class="btn ghost" data-act="skip-due" data-id="${v.recurringId}" data-period="${v.period}">Skip this month</button>` : ''}
+      ${!tx && preset.canSkip ? `<button type="button" class="btn ghost" data-act="skip-due" data-id="${v.recurringId}" data-period="${v.period}">${isDate(v.period) ? 'Skip this week' : 'Skip this month'}</button>` : ''}
       ${tx && !linked && tx.type !== 'income' ? `<button type="button" class="btn ghost" data-act="tx-to-bill" data-id="${tx.id}">Make this a monthly bill</button>` : ''}
       ${tx ? `<button type="button" class="btn danger" data-act="del-tx" data-id="${tx.id}">Delete</button>` : ''}
       ${bill ? billBlock(bill) : ''}
@@ -1508,7 +1904,7 @@ function recHistoryHtml(r, removable) {
 
 // Shown when a bill is opened from the Bills list: what it costs now, buttons to raise or lower it, and its history.
 function billBlock(r) {
-  const per = r.frequency === 'yearly' ? 'a year' : 'a month';
+  const per = PER[r.frequency];
   const next = (r.changes || []).find((c) => c.from > curYM());
   return `<div class="bill-block">
     <div class="sec-head"><h2>Bill amount</h2><button type="button" class="link" data-act="edit-rec" data-id="${r.id}">Edit bill</button></div>
@@ -1536,9 +1932,12 @@ function recSheet(r) {
         ${recChangeButtons(r)}</div>` : ''}
       <div class="two">
         <label class="field"><span>Repeats</span><select name="frequency">
+          <option value="weekly" ${freq === 'weekly' ? 'selected' : ''}>Every week</option>
           <option value="monthly" ${freq === 'monthly' ? 'selected' : ''}>Every month</option>
           <option value="yearly" ${freq === 'yearly' ? 'selected' : ''}>Every year</option></select></label>
-        <label class="field"><span>Day of the month</span><input type="text" inputmode="numeric" name="day" autocomplete="off" value="${r ? r.day : 1}"></label>
+        <label class="field ${freq === 'weekly' ? 'hidden' : ''}" data-day-wrap><span>Day of the month</span><input type="text" inputmode="numeric" name="day" autocomplete="off" value="${r ? r.day : 1}"></label>
+        <label class="field ${freq === 'weekly' ? '' : 'hidden'}" data-weekday-wrap><span>Day of the week</span><select name="weekday">
+          ${Array.from({ length: 7 }, (_, i) => `<option value="${i}" ${(freq === 'weekly' ? r.weekday : new Date().getDay()) === i ? 'selected' : ''}>${weekdayNameOf(i)}</option>`).join('')}</select></label>
       </div>
       <label class="field ${freq === 'yearly' ? '' : 'hidden'}" data-month-wrap><span>Month</span><select name="month">
         ${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}" ${(r ? r.month : Number(ui.month.slice(5, 7))) === i + 1 ? 'selected' : ''}>${monthNameOf(i + 1)}</option>`).join('')}</select></label>
@@ -1571,7 +1970,7 @@ function recChangePreview(r, up, typed, from) {
   const month = isYM(from) ? from : firstUnpaidMonth(r);
   const base = recAmount(r, month);
   const delta = parseAmount(typed);
-  const per = r.frequency === 'yearly' ? 'a year' : 'a month';
+  const per = PER[r.frequency];
   if (!(delta > 0)) return `Now ${fmt(base)} ${per}.`;
   const next = r3(up ? base + delta : base - delta);
   if (!(next > 0)) return `Now ${fmt(base)} ${per}. The decrease must be smaller than that.`;
@@ -1597,7 +1996,8 @@ function emiSheet(e) {
         <label class="field"><span>Day of the month</span><input type="text" inputmode="numeric" name="day" autocomplete="off" value="${e ? e.day : 1}"></label>
       </div>
       <div class="field"><span>Tenure in months</span>
-        <div class="seg" role="radiogroup" aria-label="Tenure in months" style="grid-template-columns:repeat(5,1fr);margin-bottom:0">
+        <div class="seg" role="radiogroup" aria-label="Tenure in months" style="--n:5;grid-template-columns:repeat(5,1fr);margin-bottom:0">
+          <i class="seg-pill" aria-hidden="true"></i>
           ${['3', '6', '12', '24', 'other'].map((v) => `<label><input type="radio" name="tenurePick" value="${v}" ${v === pick ? 'checked' : ''}><span>${v === 'other' ? 'Other' : v}</span></label>`).join('')}
         </div></div>
       <label class="field ${pick === 'other' ? '' : 'hidden'}" data-tenure-wrap><span>Number of months</span>
@@ -1709,7 +2109,10 @@ function debtDetailSheet(d) {
 }
 
 function syncRecForm(form) {
-  $('[data-month-wrap]', form).classList.toggle('hidden', form.elements.frequency.value !== 'yearly');
+  const freq = form.elements.frequency.value;
+  $('[data-month-wrap]', form).classList.toggle('hidden', freq !== 'yearly');
+  $('[data-day-wrap]', form).classList.toggle('hidden', freq === 'weekly');
+  $('[data-weekday-wrap]', form).classList.toggle('hidden', freq !== 'weekly');
 }
 
 /* ---------- Saving forms ---------- */
@@ -1765,14 +2168,21 @@ function submitRec(f) {
   if (!name) return toast('Give it a name.');
   const amount = parseAmount(f.amount);
   if (!(amount > 0)) return toast('Enter an amount above zero.');
-  const day = dayOf(f.day);
+  const frequency = FREQS.includes(f.frequency) ? f.frequency : 'monthly';
+  const weekly = frequency === 'weekly';
+  // A weekly item has no day of the month, so whatever is in that hidden box is not checked.
+  const day = weekly ? dayOf(f.day) || 1 : dayOf(f.day);
   if (Number.isNaN(day)) return toast('The day must be between 1 and 31.');
   const start = pickedMonth(f, 'start');
   if (!isYM(start)) return toast('Pick the month it starts from.');
   const c = cat(f.categoryId);
-  const data = { type: f.type, name, amount, categoryId: c && c.type === f.type ? c.id : '', frequency: f.frequency === 'yearly' ? 'yearly' : 'monthly',
-    day, month: Number(f.month) || 1, start, paused: !!f.paused };
   const existing = f.id && state.recurring.find((r) => r.id === f.id);
+  const weekday = Math.min(6, Math.max(0, Math.round(Number(f.weekday)) || 0));
+  // A weekly item that starts this month counts from today: the weeks already gone are not listed as unpaid.
+  const kept = existing && existing.frequency === 'weekly' && existing.start === start;
+  const since = !weekly ? '' : kept ? existing.since || '' : start === curYM() ? today() : '';
+  const data = { type: f.type, name, amount, categoryId: c && c.type === f.type ? c.id : '', frequency,
+    day, weekday, since, month: Number(f.month) || 1, start, paused: !!f.paused };
   if (existing) Object.assign(existing, data);
   else state.recurring.push({ id: uid(), end: '', skips: [], note: '', changes: [], ...data });
   done();
@@ -1914,7 +2324,28 @@ const actions = {
   // Using the app without an account is switched off: the welcome screen no longer offers it. The action is kept for the tests.
   'start': () => { startApp(); save(); render(); },
   'welcome-points': () => welcomePointsSheet(),
-  'android-update': () => { if (androidUpdate) location.href = androidUpdate.url; },
+  'notices': () => noticesSheet(),
+  'notice-go': (el) => window.fetaGo(el.dataset.id, el.dataset.month),
+  'notify-ask': () => { try { android.notifyAsk(); } catch (e) { toast('Open your phone’s settings and allow notifications for FETA.'); } },
+  'android-update': () => androidUpdateSheet(),
+  'android-later': () => { updateUi.later = true; closeSheet(); render(); },
+  'android-download': () => {
+    if (!androidUpdate) return closeSheet();
+    // An older Android app cannot download by itself: open the file in the phone's browser, as before.
+    if (!androidInApp()) { closeSheet(); location.href = androidUpdate.url; return; }
+    let started = false;
+    try { started = !!android.updateStart(androidUpdate.url); } catch (e) { /* handled below */ }
+    if (started) { updateUi.stage = 'downloading'; updateUi.pct = 0; updateUi.error = ''; }
+    else { updateUi.stage = 'offer'; updateUi.error = 'The download could not start. Try again.'; }
+    androidUpdateSheet();
+  },
+  'android-install': () => {
+    let ok = false;
+    try { ok = !!android.updateInstall(); } catch (e) { /* handled below */ }
+    if (ok) return closeSheet();
+    updateUi.stage = 'offer'; updateUi.error = 'The update file is missing. Download it again.';
+    androidUpdateSheet();
+  },
   'update-app': async () => {
     toast('Getting the latest version…');
     try {
@@ -2021,8 +2452,8 @@ const actions = {
   'goto-month': (el) => { if (isYM(el.dataset.id)) { ui.month = el.dataset.id; ui.tab = 'home'; ui.home = 'month'; render(); window.scrollTo(0, 0); } },
   'skip-due': (el) => {
     const r = find(state.recurring, el);
-    if (r && isYM(el.dataset.period) && !r.skips.includes(el.dataset.period)) r.skips.push(el.dataset.period);
-    done(); toast('Skipped for this month');
+    if (r && isPeriod(el.dataset.period) && !r.skips.includes(el.dataset.period)) r.skips.push(el.dataset.period);
+    done(); toast(isDate(el.dataset.period) ? 'Skipped for this week' : 'Skipped for this month');
   },
 
   'add-rec': () => recSheet(null),
@@ -2109,14 +2540,6 @@ const actions = {
 
   'backup': () => shareOrDownload(`feta-backup-${today()}.json`, JSON.stringify(state, null, 2), 'application/json'),
   'export-csv': () => exportCsv(),
-  'erase': () => confirmSheet('Erase everything?', 'All income, expenses, savings, bills, EMIs, plans and money owed on this device will be deleted. This cannot be undone.', 'Erase everything', () => {
-    const { currency, theme } = state.settings;
-    state = blankState();
-    Object.assign(state.settings, { currency, theme });
-    localStorage.removeItem(OLD_KEY);
-    ui.tab = 'home'; ui.bar = null; ui.search = ''; ui.month = curYM();
-    save(); render();
-  })
 };
 
 document.addEventListener('click', (e) => {
@@ -2126,11 +2549,19 @@ document.addEventListener('click', (e) => {
   if (fn) fn(el);
 });
 
+// Numbers are typed with the digits 0-9 only. Digits of another script (Bengali, Hindi, Arabic...) are not read as
+// numbers, and a mix such as "1২০০" would be cut short, so the person is told as they type and nothing is saved.
+const NUMBER_BOXES = 'input[inputmode="decimal"], input[inputmode="numeric"]';
+const USE_ENGLISH_DIGITS = 'Please use English numbers (0-9).';
+const otherDigits = (v) => /[^\d\P{Nd}]/u.test(String(v ?? ''));
+
 const submitters = { auth: submitAuth, newpass: submitNewPass, tx: submitTx, cat: submitCat, rec: submitRec, recchange: submitRecChange, emi: submitEmi, plan: submitPlan, debt: submitDebt, debtpay: submitDebtPay };
 document.addEventListener('submit', (e) => {
   const form = e.target.closest('[data-form]');
   if (!form) return;
   e.preventDefault();
+  const odd = [...form.querySelectorAll(NUMBER_BOXES)].find((box) => otherDigits(box.value));
+  if (odd) { if (!odd.closest('.hidden')) odd.focus(); return toast(USE_ENGLISH_DIGITS, 5000); }
   submitters[form.dataset.form](Object.fromEntries(new FormData(form)), form);
 });
 
@@ -2153,6 +2584,14 @@ document.addEventListener('change', (e) => {
     syncEmiForm(form);
   } else if (form && form.dataset.form === 'recchange') {
     syncRecChangeForm(form);
+  } else if (el.hasAttribute('data-lang')) {
+    setLang(el.value);
+    render();
+    queueNotify();
+  } else if (el.dataset.notify) {
+    if (!state.settings.notify) state.settings.notify = {};
+    if (el.checked) delete state.settings.notify[el.dataset.notify]; else state.settings.notify[el.dataset.notify] = false;
+    save(); render();
   } else if (el.dataset.setting) {
     state.settings[el.dataset.setting] = el.value;
     fmtCache = {};
@@ -2164,6 +2603,7 @@ document.addEventListener('change', (e) => {
 });
 
 document.addEventListener('input', (e) => {
+  if (e.target.matches && e.target.matches(NUMBER_BOXES) && otherDigits(e.target.value)) toast(USE_ENGLISH_DIGITS, 5000);
   const form = e.target.closest('[data-form="emi"]');
   if (form) return syncEmiForm(form);
   const changeForm = e.target.closest('[data-form="recchange"]');
@@ -2199,6 +2639,8 @@ window.fetaBack = () => {
   try { localStorage.removeItem(SYNC_KEY); } catch (e) { /* ignore */ }
 })();
 
+document.documentElement.lang = lang;
+watchLanguage();
 applyTheme();
 render();
 

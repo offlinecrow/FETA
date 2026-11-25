@@ -1,11 +1,12 @@
 // Offline support. When online, always load the newest files; when offline, use the saved copy.
 // VERSION must change with every release (keep it equal to APP_VERSION in app.js) so phones notice the update.
-const VERSION = '42';
+const VERSION = '50';
 const CACHE = 'feta-v' + VERSION;
 const SHELL = [
   './',
   'index.html',
   'styles.css',
+  'lang.js',
   'app.js',
   'manifest.webmanifest',
   'icons/icon-180.png',
