@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '32';
+const APP_VERSION = '33';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -850,6 +850,7 @@ function viewWelcome() {
       <h1 class="brand">${LOGO_SVG}</h1>
       <p class="tagline">Family Expense Tracker App</p>
       <p class="lead">A simple way to track your family’s money. Note your income and spending as it happens, and always know what is left for the month.</p>
+      <button class="link welcome-more" data-act="welcome-points">What you can do <span aria-hidden="true">›</span></button>
       <label class="field"><span>Your currency</span><select data-setting="currency">${currencyOptions(state.settings.currency)}</select></label>
       <button class="btn" data-act="open-account" data-id="signup">Create an account</button>
       <button class="btn ghost" data-act="open-account" data-id="signin">I already have an account</button>
@@ -857,7 +858,6 @@ function viewWelcome() {
       <p class="note">With an account your data is backed up online and stays the same on every device you sign in on. Without one it stays only on this device. You can create an account later under More.</p>
     </div>
     <div class="welcome-foot">
-      <button class="link" data-act="welcome-points">What you can do</button>
       <p class="note">Version ${APP_VERSION}</p>
     </div>
   </div>`;
@@ -869,6 +869,8 @@ function welcomePointsSheet() {
       <span class="emoji" aria-hidden="true">${emoji}</span>
       <span class="row-main"><span class="name">${title}</span><span class="point-text">${text}</span></span></div>`).join('')}</div>
     <button class="btn ghost" data-act="close-sheet" style="margin-top:14px">Close</button>`);
+  // This one opens in the middle of the screen instead of sliding up from the bottom.
+  $('#sheet-root .sheet').classList.add('center');
 }
 
 /* ---------- Home ---------- */
