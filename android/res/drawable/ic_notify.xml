@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The logo as a small one-colour icon for the status bar and notifications. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="1000" android:viewportHeight="1000">
+    <path android:fillColor="#FFFFFFFF" android:pathData="M322.291 140.792C334.108 109.534 364.037 88.8516 397.454 88.8516H658.768C714.963 88.8516 753.802 145.055 733.931 197.619L580.757 602.815C568.94 634.073 539.011 654.755 505.594 654.755H244.28C188.086 654.755 149.247 598.551 169.117 545.988L322.291 140.792Z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M419.244 398.187C431.06 366.928 460.989 346.246 494.406 346.246H755.721C811.915 346.246 850.754 402.45 830.883 455.014L677.709 860.209C665.892 891.468 635.963 912.15 602.546 912.15H341.232C285.038 912.15 246.199 855.946 266.069 803.382L419.244 398.187Z" />
+</vector>

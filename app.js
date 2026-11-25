@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '50';
+const APP_VERSION = '51';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -147,6 +147,7 @@ const langOptions = () => LANGS.map(([id, name]) => `<option value="${id}" ${id 
 // The kinds of reminders, each with its own switch under More.
 const NOTIFY_KINDS = [
   ['bills', 'Bills to pay', 'On the day a bill or instalment is due, and again if it is still unpaid 3 days later.'],
+  ['weekreport', 'Weekly report', 'On the last evening of each week.'],
   ['report', 'Monthly report', 'On the last evening of each month.'],
   ['plans', 'Planner reminders', 'When the month you planned to buy something arrives, and the month before.'],
   ['budget', 'Spending limits', 'When a category reaches 80% and 100% of its monthly limit.'],
@@ -198,6 +199,8 @@ const toDate = (s) => { const [y, m, d] = s.split('-').map(Number); return new D
 const today = () => iso(new Date());
 const curYM = () => today().slice(0, 7);
 const addDays = (s, n) => { const d = toDate(s); d.setDate(d.getDate() + n); return iso(d); };
+// Weeks run from Sunday to Saturday.
+const weekStartOf = (s) => addDays(s, -toDate(s).getDay());
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(toDate(s).getTime());
 const isYM = (s) => typeof s === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
 // What a payment of a repeating item stands for: a month, or for a weekly item the day it was due.
@@ -382,15 +385,41 @@ const SYNC_KEY = 'budgetnest.sync';
 const LEFT_KEY = 'budgetnest.leftover';
 const COLLECTIONS = ['transactions', 'recurring', 'emis', 'plans', 'debts'];
 
+// The Android app keeps its own copy of the sign-in, written to the phone at once. The page's storage is written a
+// little later, so it can be missing or out of date when Android closes the app to install an update, and a sign-in
+// that has since been renewed no longer works. On opening, the newer of the two copies is used.
+function keptSession() {
+  try {
+    const app = window.FetaAndroid;
+    const s = app && app.sessionLoad ? JSON.parse(app.sessionLoad() || 'null') : null;
+    return s && s.access_token && s.refresh_token && s.user && s.user.id ? s : null;
+  } catch (e) { return null; }
+}
+let keptText = null;
+function keepSession() {
+  try {
+    const app = window.FetaAndroid;
+    if (!app || !app.sessionSave) return;
+    const text = sync.session ? JSON.stringify(sync.session) : '';
+    if (text === keptText) return;
+    if (app.sessionSave(text)) keptText = text;
+  } catch (e) { /* the page's own copy is still there */ }
+}
+
 function loadSync() {
+  const out = { session: null, rev: 0, dirty: false, last: '', error: '' };
   try {
     const s = JSON.parse(localStorage.getItem(SYNC_KEY));
-    if (s && typeof s === 'object') return { session: s.session || null, rev: Number(s.rev) || 0, dirty: !!s.dirty, last: s.last || '', error: '' };
+    if (s && typeof s === 'object') Object.assign(out, { session: s.session || null, rev: Number(s.rev) || 0, dirty: !!s.dirty, last: s.last || '' });
   } catch (e) { /* start signed out */ }
-  return { session: null, rev: 0, dirty: false, last: '', error: '' };
+  const kept = keptSession();
+  const mine = out.session;
+  if (kept && (!mine || (mine.user && mine.user.id === kept.user.id && Number(kept.expires_at) > Number(mine.expires_at)))) out.session = kept;
+  return out;
 }
 function saveSync() {
   try { localStorage.setItem(SYNC_KEY, JSON.stringify({ session: sync.session, rev: sync.rev, dirty: sync.dirty, last: sync.last })); } catch (e) { /* ignore */ }
+  keepSession();
 }
 
 let sync = loadSync();
@@ -487,7 +516,8 @@ function offerLeftover() {
 // Changes that could not be saved online are set aside and offered back at the next sign-in.
 function signOutNow() {
   const token = sync.session && sync.session.access_token;
-  if (token) sb('/auth/v1/logout', { method: 'POST', token }).catch(() => {});
+  // Only this device is signed out. Without the scope, every phone and browser using the account would be.
+  if (token) sb('/auth/v1/logout?scope=local', { method: 'POST', token }).catch(() => {});
   clearTimeout(pushTimer);
   if (sync.dirty) setAside();
   dropSession();
@@ -658,7 +688,7 @@ function accountSheet(mode) {
   openSheet(up ? 'Create an account' : 'Sign in', `
     <form data-form="auth" novalidate>
       <input type="hidden" name="mode" value="${up ? 'signup' : 'signin'}">
-      <label class="field"><span>Email</span><input type="text" inputmode="email" name="email" autocomplete="email" autocapitalize="none" spellcheck="false" data-autofocus></label>
+      <label class="field"><span>Email</span><input type="email" inputmode="email" name="email" autocomplete="username" autocapitalize="none" spellcheck="false" data-autofocus></label>
       ${passwordField(`Password${up ? ' (at least 6 characters)' : ''}`, up ? 'new-password' : 'current-password')}
       ${up ? '<p class="note">Your data is saved to your account so it is backed up and the same on every device you sign in on.</p>' : ''}
       <button class="btn">${up ? 'Create account' : 'Sign in'}</button>
@@ -677,6 +707,18 @@ function newPasswordSheet() {
   centerSheet();
 }
 
+// Lets the phone's password manager (Google on Android, the keychain on an iPhone) offer to save the sign-in, so next
+// time it fills it in after a fingerprint, face or screen-lock check. The form must still be on screen when this runs.
+async function offerToSavePassword(email, password) {
+  try {
+    const app = window.FetaAndroid;
+    if (app && app.loginDone) { app.loginDone(); await new Promise((r) => setTimeout(r, 300)); }
+    else if (window.PasswordCredential && navigator.credentials && navigator.credentials.store) {
+      navigator.credentials.store(new PasswordCredential({ id: email, password, name: email })).catch(() => {});
+    }
+  } catch (e) { /* saving the password is optional */ }
+}
+
 const validEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 let authBusy = false;
 
@@ -689,6 +731,7 @@ async function submitAuth(f) {
   try {
     if (f.mode === 'signup') {
       const d = await sb('/auth/v1/signup', { method: 'POST', body: { email, password: f.password } });
+      await offerToSavePassword(email, f.password);
       if (d && d.access_token) { setSession(d); await afterSignIn(); toast('Account created'); }
       else {
         openSheet('Check your email', `<p>We sent a confirmation link to ${esc(email)}. Open it, then come back to this app and sign in with your email and password.</p>
@@ -698,6 +741,7 @@ async function submitAuth(f) {
       }
     } else {
       setSession(await sb('/auth/v1/token?grant_type=password', { method: 'POST', body: { email, password: f.password } }));
+      await offerToSavePassword(email, f.password);
       await afterSignIn();
       if (!pendingRemote) toast('Signed in');
     }
@@ -943,6 +987,19 @@ function buildNotices() {
     }
   }
 
+  if (want('weekreport')) {
+    const thisWeek = weekStartOf(today());
+    for (const from of [addDays(thisWeek, -7), thisWeek]) {
+      const to = addDays(from, 6);
+      const at = atHour(to, 20);
+      const t = totalsOf(state.transactions.filter((x) => x.date >= from && x.date <= to));
+      const past = at <= now;
+      if (past && !(t.income || t.expense || t.saving)) continue;
+      add('weekreport', `week:${from}`, at, 'Your weekly report is ready',
+        past ? `Income ${fmt(t.income)} · spent ${fmt(t.expense)} · saved ${fmt(t.saving)} · left ${fmt(t.balance)}.` : 'See where your money went this week.', 'reports', from);
+    }
+  }
+
   if (want('report')) {
     for (const ym of [addMonths(ymNow, -1), ymNow]) {
       const at = atHour(dateIn(ym, 31), 20);
@@ -1039,6 +1096,8 @@ window.fetaGo = (tab, month) => {
   ui.tab = tab; ui.bar = null;
   if (tab === 'home') { ui.home = 'month'; if (isYM(month)) ui.month = month; }
   if (tab === 'reports' && isYM(month)) { ui.rep.period = 'month'; ui.rep.cursor = month + '-01'; }
+  // A weekly report is opened with the first day of its week.
+  if (tab === 'reports' && isDate(month)) { ui.rep.period = 'week'; ui.rep.cursor = month; }
   render(); window.scrollTo(0, 0);
 };
 
@@ -1072,6 +1131,18 @@ function notifyCard() {
       ${phone}
       ${NOTIFY_KINDS.map(([kind, label, hint]) => `<label class="check notify-row"><input type="checkbox" data-notify="${kind}" ${off[kind] === false ? '' : 'checked'}>
         <span><span class="name">${label}</span><span class="row-sub" style="white-space:normal;display:block">${hint}</span></span></label>`).join('')}
+    </section>`;
+}
+
+// Only in the Android app: approximate location, asked for so that ads can fit the person's area once FETA shows ads.
+const locationState = () => { try { return android && android.locationState ? String(android.locationState()) : ''; } catch (e) { return ''; } };
+function locationCard() {
+  const st = locationState();
+  if (!st) return '';
+  return `<div class="sec-head"><h2>Location</h2></div>
+    <section class="card">
+      <p class="note" style="margin:0 0 ${st === 'granted' ? 0 : 10}px">${st === 'granted' ? '✓ FETA may use this phone’s approximate location.' : 'FETA does not have this phone’s location.'} It is only used to choose ads that fit your area. It is never saved with your income and expenses.</p>
+      ${st === 'granted' ? '' : '<button class="btn" data-act="location-ask">Allow approximate location</button>'}
     </section>`;
 }
 
@@ -1590,12 +1661,17 @@ function niceMax(v) {
   return 10 * p;
 }
 
-function repScope() {
-  const { period, cursor } = ui.rep;
-  const prefix = cursor.slice(0, { day: 10, month: 7, year: 4 }[period]);
-  const label = period === 'day' ? fmtDayLong(cursor) : period === 'month' ? ymLabel(prefix) : prefix;
-  return { period, prefix, label, list: state.transactions.filter((t) => t.date.startsWith(prefix)) };
+// A report covers one day, one week (Sunday to Saturday), one month or one year.
+function scopeOf(period, cursor) {
+  let from, to, label;
+  if (period === 'day') { from = to = cursor; label = fmtDayLong(cursor); }
+  else if (period === 'week') { from = weekStartOf(cursor); to = addDays(from, 6); label = `${fmtShort(from)} – ${fmtShort(to)} ${to.slice(0, 4)}`; }
+  else if (period === 'month') { from = cursor.slice(0, 7) + '-01'; to = dateIn(cursor.slice(0, 7), 31); label = ymLabel(cursor.slice(0, 7)); }
+  else { from = cursor.slice(0, 4) + '-01-01'; to = cursor.slice(0, 4) + '-12-31'; label = cursor.slice(0, 4); }
+  return { period, from, to, prefix: from.slice(0, { day: 10, week: 10, month: 7, year: 4 }[period]), label,
+    list: state.transactions.filter((t) => t.date >= from && t.date <= to) };
 }
+const repScope = () => scopeOf(ui.rep.period, ui.rep.cursor);
 
 function rankRows(list, measure, period) {
   const sums = {};
@@ -1606,26 +1682,29 @@ function rankRows(list, measure, period) {
   if (!rows.length) return `<div class="empty">No ${TYPE_PLURAL[measure].toLowerCase()} recorded in this period.</div>`;
   return `<div class="rank">${rows.map(({ id, c, v }) => {
     const budget = measure === 'expense' && c && c.budget > 0 ? c.budget * (period === 'year' ? 12 : 1) : 0;
-    const over = period !== 'day' && budget > 0 && v > budget;
+    const limits = period === 'month' || period === 'year';
+    const over = limits && budget > 0 && v > budget;
     return `<button class="rank-row" data-act="rep-cat" data-id="${id}">
       <span class="row-top"><span class="name">${esc(catLabel(c))}</span>
         <span class="amt">${fmt(v)}<span class="share">${Math.round((v / total) * 100)}%</span></span></span>
       <span class="rank-bar" style="width:${(v / top) * 100}%"></span>
       ${measure === 'income' && c ? `<span class="row-sub">${c.group === 'secondary' ? 'Secondary' : 'Primary'} income</span>` : ''}
-      ${period !== 'day' && budget > 0 ? `<span class="row-sub">${over ? `<span class="over">⚠ Over the ${fmt(budget)} limit by ${fmt(v - budget)}</span>` : `${fmt(budget - v)} left of the ${fmt(budget)} limit`}</span>` : ''}
+      ${limits && budget > 0 ? `<span class="row-sub">${over ? `<span class="over">⚠ Over the ${fmt(budget)} limit by ${fmt(v - budget)}</span>` : `${fmt(budget - v)} left of the ${fmt(budget)} limit`}</span>` : ''}
     </button>`;
   }).join('')}</div>`;
 }
 
 function viewReports() {
-  const { period, prefix, label, list } = repScope();
+  const { period, prefix, from, to, label, list } = repScope();
   const measure = ui.rep.measure;
   const t = totalsOf(list);
   const mlist = list.filter((x) => x.type === measure);
   const rate = t.income > 0 ? Math.round((t.saving / t.income) * 100) : 0;
 
   let buckets = [];
-  if (period === 'month') {
+  if (period === 'week') {
+    buckets = Array.from({ length: 7 }, (_, i) => addDays(from, i)).map((d) => ({ key: d, label: fmtDay(d), value: 0 }));
+  } else if (period === 'month') {
     buckets = Array.from({ length: daysInMonth(prefix) }, (_, i) => ({ key: `${prefix}-${pad(i + 1)}`, label: fmtDay(`${prefix}-${pad(i + 1)}`), value: 0 }));
   } else if (period === 'year') {
     buckets = Array.from({ length: 12 }, (_, i) => ({ key: `${prefix}-${pad(i + 1)}`, label: ymLabel(`${prefix}-${pad(i + 1)}`), value: 0 }));
@@ -1655,7 +1734,7 @@ function viewReports() {
   }
 
   return `<header class="top"><h1>Reports</h1></header>
-    <div class="sticky-top">${segButtons('rep-period', [['day', 'Day'], ['month', 'Month'], ['year', 'Year']], period)}
+    <div class="sticky-top">${segButtons('rep-period', [['day', 'Day'], ['week', 'Week'], ['month', 'Month'], ['year', 'Year']], period)}
     <div class="month-nav">
       <button class="nav-btn" data-act="rep-nav" data-d="-1" aria-label="Previous">‹</button>
       <div class="month-title small">${label}</div>
@@ -1669,23 +1748,212 @@ function viewReports() {
         <div class="kpi"><div class="label">Left</div><div class="v ${t.balance < 0 ? 'over' : ''}">${fmt(t.balance)}</div></div>
       </div>
     </section>
+    <div class="two" style="margin-bottom:14px">
+      <button class="btn ghost" data-act="rep-share">Share report</button>
+      <button class="btn ghost" data-act="rep-download">Download PDF</button>
+    </div>
     ${segButtons('rep-measure', [['expense', 'Expenses'], ['income', 'Income'], ['saving', 'Savings']], measure)}
     ${buckets.length ? `<section class="card">
-      <div class="sec-head" style="margin-top:0"><h2>${TYPE_PLURAL[measure]} per ${period === 'month' ? 'day' : 'month'}</h2></div>
+      <div class="sec-head" style="margin-top:0"><h2>${TYPE_PLURAL[measure]} per ${period === 'year' ? 'month' : 'day'}</h2></div>
       <div class="readout">${sel ? `<b>${fmt(sel.value)}</b> · ${esc(sel.label)}` : 'Tap a bar to see the amount.'}</div>
       <div class="chart" role="img" aria-label="${TYPE_PLURAL[measure]} over ${esc(label)}">
         <div class="grid-line" style="top:0"><span>${fmt(max)}</span></div>
         <div class="grid-line" style="top:50%"><span>${fmt(max / 2)}</span></div>
         <div class="cols">${buckets.map((b, i) => `<button class="col ${ui.bar === i ? 'sel' : ''}" data-act="bar" data-id="${i}" aria-label="${esc(b.label)}: ${esc(fmt(b.value))}"><span style="height:${(b.value / max) * 100}%"></span></button>`).join('')}</div>
       </div>
-      <div class="x-axis"><span>${period === 'month' ? '1' : monthNameOf(1).slice(0, 3)}</span><span>${period === 'month' ? buckets.length : monthNameOf(12).slice(0, 3)}</span></div>
+      <div class="x-axis"><span>${period === 'week' ? weekdayNameOf(toDate(from).getDay()) : period === 'month' ? '1' : monthNameOf(1).slice(0, 3)}</span><span>${period === 'week' ? weekdayNameOf(toDate(to).getDay()) : period === 'month' ? buckets.length : monthNameOf(12).slice(0, 3)}</span></div>
     </section>` : ''}
     <section class="card">
       <div class="sec-head" style="margin-top:0"><h2>${TYPE_PLURAL[measure]} by category</h2></div>
       ${split}${rankRows(mlist, measure, period)}
     </section>
     ${yearTable}
-    ${period === 'day' ? `<div class="sec-head"><h2>That day</h2></div>${txGroups(list, 'Nothing recorded on this day.')}` : ''}`;
+    ${period === 'day' ? `<div class="sec-head"><h2>That day</h2></div>${txGroups(list, 'Nothing recorded on this day.')}` : ''}
+    ${period === 'week' ? `<div class="sec-head"><h2>That week</h2></div>${txGroups(list, 'Nothing recorded in this week.')}` : ''}`;
+}
+
+/* ---------- Report as a PDF ---------- */
+
+// The report is drawn as pictures of A4 pages and those are put into a PDF. Drawing lets the phone write Bangla and
+// Hindi properly, which a PDF made of plain text could not do without carrying its own fonts.
+const PDF_W = 1240, PDF_H = 1754, PDF_M = 90;
+const PDF_FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Noto Sans Bengali", "Noto Sans Devanagari", sans-serif';
+const REPORT_TITLE = { day: 'Day report', week: 'Week report', month: 'Month report', year: 'Year report' };
+
+function reportCanvases(scope) {
+  const pages = [];
+  const right = PDF_W - PDF_M, width = PDF_W - 2 * PDF_M;
+  let ctx, y;
+  const fit = (text, max) => {
+    const chars = Array.from(String(text));
+    if (ctx.measureText(chars.join('')).width <= max) return chars.join('');
+    while (chars.length > 1 && ctx.measureText(chars.join('') + '…').width > max) chars.pop();
+    return chars.join('') + '…';
+  };
+  const put = (text, x, at, { size = 26, weight = 400, color = '#16181a', align = 'left', max = width } = {}) => {
+    ctx.font = `${weight} ${size}px ${PDF_FONT}`; ctx.fillStyle = color; ctx.textAlign = align;
+    ctx.fillText(fit(text, max), x, at);
+  };
+  const box = (x, at, w, h, color) => { ctx.fillStyle = color; ctx.fillRect(x, at, w, h); };
+  const newPage = () => {
+    const c = document.createElement('canvas');
+    c.width = PDF_W; c.height = PDF_H;
+    ctx = c.getContext('2d');
+    box(0, 0, PDF_W, PDF_H, '#ffffff');
+    ctx.textBaseline = 'alphabetic';
+    pages.push(c); y = PDF_M;
+  };
+  const need = (h) => { if (y + h > PDF_H - PDF_M - 40) newPage(); };
+  const heading = (text) => { need(170); y += 34; put(text, PDF_M, y + 30, { size: 32, weight: 700 }); y += 48; box(PDF_M, y, width, 2, '#d5d9dc'); y += 16; };
+  const grey = '#5b6166';
+  const t = totalsOf(scope.list);
+
+  newPage();
+  put('FETA', PDF_M, y + 46, { size: 54, weight: 800, color: '#2f7183' });
+  put(tr(REPORT_TITLE[scope.period]), right, y + 40, { size: 30, weight: 700, align: 'right', max: width - 260 });
+  y += 84;
+  put(scope.label, PDF_M, y + 36, { size: 38, weight: 700 });
+  y += 60; box(PDF_M, y, width, 3, '#2f7183'); y += 30;
+
+  const kpis = [['Income', t.income], ['Expenses', t.expense], ['Savings', t.saving], ['Left', t.balance]];
+  const bw = (width - 60) / 4;
+  kpis.forEach(([label, v], i) => {
+    const x = PDF_M + i * (bw + 20);
+    box(x, y, bw, 130, '#f1f4f5');
+    put(tr(label), x + 18, y + 44, { size: 22, color: grey, max: bw - 36 });
+    put(fmt(v), x + 18, y + 98, { size: 32, weight: 700, color: label === 'Left' && v < 0 ? '#b3261e' : '#16181a', max: bw - 36 });
+  });
+  y += 150;
+
+  for (const type of ['expense', 'income', 'saving']) {
+    const sums = {};
+    for (const x of scope.list) if (x.type === type) { const k = cat(x.categoryId) ? x.categoryId : ''; sums[k] = r3((sums[k] || 0) + x.amount); }
+    const rows = Object.entries(sums).map(([id, v]) => ({ c: cat(id), v })).sort((a, z) => z.v - a.v);
+    if (!rows.length) continue;
+    const total = sum(rows, (x) => x.v);
+    heading(tr(`${TYPE_PLURAL[type]} by category`));
+    for (const { c, v } of rows) {
+      need(66);
+      put(tr(catLabel(c)), PDF_M, y + 30, { max: width - 400 });
+      put(`${Math.round((v / total) * 100)}%`, right - 270, y + 30, { size: 22, color: grey, align: 'right' });
+      put(fmt(v), right, y + 30, { weight: 600, align: 'right', max: 250 });
+      box(PDF_M, y + 44, width, 6, '#e6e9eb');
+      box(PDF_M, y + 44, Math.max(4, width * (v / rows[0].v)), 6, '#2f7183');
+      y += 66;
+    }
+  }
+
+  if (scope.period === 'year') {
+    const year = scope.from.slice(0, 4);
+    const months = Array.from({ length: 12 }, (_, i) => `${year}-${pad(i + 1)}`).map((ym) => ({ ym, t: totalsOf(scope.list.filter((x) => x.date.startsWith(ym))) }))
+      .filter((m) => m.t.income || m.t.expense || m.t.saving);
+    if (months.length) {
+      heading(tr('Month by month'));
+      const col = (i) => PDF_M + width * (0.28 + 0.18 * (i + 1));
+      const row = (cells, opt) => { need(52); put(cells[0], PDF_M, y + 30, { ...opt, max: width * 0.26 }); cells.slice(1).forEach((v, i) => put(v, col(i), y + 30, { ...opt, align: 'right', max: width * 0.17 })); y += 52; };
+      row(['Month', 'In', 'Out', 'Saved', 'Left'].map((w) => tr(w)), { size: 22, color: grey });
+      for (const m of months) row([monthNameOf(Number(m.ym.slice(5, 7))), fmt(m.t.income), fmt(m.t.expense), fmt(m.t.saving), fmt(m.t.balance)], { size: 24 });
+    }
+  } else {
+    heading(tr('Transactions'));
+    const list = scope.list.slice().sort((a, z) => (a.date < z.date ? -1 : a.date > z.date ? 1 : (a.created || 0) - (z.created || 0)));
+    if (!list.length) { need(60); put(tr('Nothing recorded in this period.'), PDF_M, y + 30, { color: grey }); y += 60; }
+    for (const x of list) {
+      need(58);
+      const c = cat(x.categoryId);
+      put(fmtShort(x.date), PDF_M, y + 30, { size: 22, color: grey, max: 140 });
+      put(x.note || tr(catLabel(c)), PDF_M + 160, y + 30, { size: 24, max: width - 160 - 470 });
+      put(tr(x.note && c ? c.name : TYPE_LABEL[x.type]), right - 250, y + 30, { size: 20, color: grey, align: 'right', max: 200 });
+      put(`${x.type === 'income' ? '+' : '−'} ${fmt(x.amount)}`, right, y + 30, { size: 24, weight: 600, align: 'right', max: 240, color: x.type === 'income' ? '#1b6e3c' : '#16181a' });
+      box(PDF_M, y + 46, width, 1, '#eceef0');
+      y += 58;
+    }
+  }
+
+  pages.forEach((c, i) => {
+    ctx = c.getContext('2d');
+    put(`FETA · ${fmtDayLong(today())}`, PDF_M, PDF_H - 60, { size: 20, color: '#8a9096', max: width - 160 });
+    put(`${i + 1} / ${pages.length}`, right, PDF_H - 60, { size: 20, color: '#8a9096', align: 'right' });
+  });
+  return pages;
+}
+
+// Puts the page pictures into a PDF file, one A4 page each.
+function pdfFromCanvases(canvases) {
+  const enc = new TextEncoder();
+  const parts = [], offsets = [];
+  let pos = 0;
+  const push = (x) => { const b = typeof x === 'string' ? enc.encode(x) : x; parts.push(b); pos += b.length; };
+  const obj = (n, body) => { offsets[n] = pos; push(`${n} 0 obj\n`); body(); push('\nendobj\n'); };
+  const images = canvases.map((c) => {
+    const bin = atob(c.toDataURL('image/jpeg', 0.9).split(',')[1]);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return { bytes, w: c.width, h: c.height };
+  });
+  push('%PDF-1.4\n');
+  obj(1, () => push('<< /Type /Catalog /Pages 2 0 R >>'));
+  obj(2, () => push(`<< /Type /Pages /Kids [${images.map((_, i) => `${3 + i * 3} 0 R`).join(' ')}] /Count ${images.length} >>`));
+  images.forEach((im, i) => {
+    const p = 3 + i * 3;
+    const draw = 'q 595.28 0 0 841.89 0 0 cm /Im0 Do Q';
+    obj(p, () => push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Resources << /XObject << /Im0 ${p + 2} 0 R >> >> /Contents ${p + 1} 0 R >>`));
+    obj(p + 1, () => push(`<< /Length ${draw.length} >>\nstream\n${draw}\nendstream`));
+    obj(p + 2, () => {
+      push(`<< /Type /XObject /Subtype /Image /Width ${im.w} /Height ${im.h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${im.bytes.length} >>\nstream\n`);
+      push(im.bytes); push('\nendstream');
+    });
+  });
+  const count = 2 + images.length * 3;
+  const xref = pos;
+  push(`xref\n0 ${count + 1}\n0000000000 65535 f \n`);
+  for (let n = 1; n <= count; n++) push(`${String(offsets[n]).padStart(10, '0')} 00000 n \n`);
+  push(`trailer\n<< /Size ${count + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  const out = new Uint8Array(pos);
+  let at = 0;
+  for (const b of parts) { out.set(b, at); at += b.length; }
+  return out;
+}
+
+function toBase64(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+function saveBlob(file, filename) {
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+// Makes the PDF of the report on screen and either hands it to the phone's share list (WhatsApp, Messenger, Telegram,
+// email and so on) or saves it on the device. Everything up to the share runs in one go, as phones require for sharing.
+function sendReport(mode) {
+  const scope = repScope();
+  let bytes;
+  try { bytes = pdfFromCanvases(reportCanvases(scope)); } catch (e) { return toast('Could not make the PDF.'); }
+  const name = `FETA-${scope.period}-report-${scope.from}${scope.to !== scope.from ? '_' + scope.to : ''}.pdf`;
+  const app = window.FetaAndroid;
+  if (app) {
+    // Inside the Android app the page cannot share or save files itself, so the app does it.
+    if (!app.shareFile || !app.saveFileBase64) return toast('Update the FETA Android app to share or download reports.');
+    let ok = false;
+    try { ok = mode === 'share' ? app.shareFile(name, 'application/pdf', toBase64(bytes)) : app.saveFileBase64(name, 'application/pdf', toBase64(bytes)); } catch (e) { /* told below */ }
+    if (!ok) toast(mode === 'share' ? 'Could not share the report.' : 'Could not save the file.');
+    return;
+  }
+  const file = new File([bytes], name, { type: 'application/pdf' });
+  if (mode === 'share') {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file], title: `FETA · ${scope.label}` }).catch((e) => { if (!e || e.name !== 'AbortError') saveBlob(file, name); });
+      return;
+    }
+    toast('This browser cannot share files, so the PDF was downloaded instead.', 5000);
+  }
+  saveBlob(file, name);
 }
 
 /* ---------- Planner: plans, receivable, payable ---------- */
@@ -1770,6 +2038,7 @@ function viewMore() {
     ${catList('Savings categories', catsOf('saving'), 'saving')}
 
     ${notifyCard()}
+    ${locationCard()}
     <div class="sec-head"><h2>Settings</h2></div>
     <section class="card">
       <label class="field"><span>Language</span><select data-lang>${langOptions()}</select></label>
@@ -2523,7 +2792,7 @@ const actions = {
   'rep-nav': (el) => {
     const d = Number(el.dataset.d);
     const { period, cursor } = ui.rep;
-    ui.rep.cursor = period === 'day' ? addDays(cursor, d) : period === 'month' ? addMonths(cursor.slice(0, 7), d) + '-01' : `${Number(cursor.slice(0, 4)) + d}-01-01`;
+    ui.rep.cursor = period === 'day' ? addDays(cursor, d) : period === 'week' ? addDays(cursor, 7 * d) : period === 'month' ? addMonths(cursor.slice(0, 7), d) + '-01' : `${Number(cursor.slice(0, 4)) + d}-01-01`;
     ui.bar = null; render();
   },
   'rep-goto': (el) => { ui.rep.period = 'month'; ui.rep.cursor = el.dataset.id; ui.bar = null; render(); window.scrollTo(0, 0); },
@@ -2537,6 +2806,9 @@ const actions = {
         ${t.note ? `<span class="row-sub">${fmtDay(t.date)}</span>` : ''}</span></button>`).join('')}</div>`);
   },
   'bar': (el) => { ui.bar = Number(el.dataset.id); render(); },
+  'rep-share': () => sendReport('share'),
+  'rep-download': () => sendReport('download'),
+  'location-ask': () => { try { android.locationAsk(); } catch (e) { toast('Open your phone’s settings and allow location for FETA.'); } },
 
   'backup': () => shareOrDownload(`feta-backup-${today()}.json`, JSON.stringify(state, null, 2), 'application/json'),
   'export-csv': () => exportCsv(),
@@ -2645,6 +2917,8 @@ applyTheme();
 render();
 
 handleAuthLink().then((handled) => { if (!handled) syncNow(); });
+// The Android app asks once, the first time it is used, whether it may show notifications.
+try { if (android && android.notifyAskFirst && state.settings.started) android.notifyAskFirst(); } catch (e) { /* older app */ }
 checkAndroidUpdate();
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { syncNow(); checkAndroidUpdate(); } });
 window.addEventListener('online', () => syncNow());

@@ -3,6 +3,13 @@
     package="io.github.offlinecrow.feta">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Lets FETA hand its own downloaded update to Android's installer. Android still asks the person to confirm. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Reminders: showing notifications, and setting them again after the phone restarts. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Approximate location only, asked for under More. It is for choosing ads that fit the person's area. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <application
         android:allowBackup="true"
@@ -22,5 +29,33 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <provider
+            android:name=".UpdateProvider"
+            android:authorities="io.github.offlinecrow.feta.update"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+        <provider
+            android:name=".ShareProvider"
+            android:authorities="io.github.offlinecrow.feta.share"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+        <receiver
+            android:name=".UpdatedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".NotifyReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
