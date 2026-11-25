@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '28';
+const APP_VERSION = '31';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -232,6 +232,8 @@ let pendingConfirm = null;
 const SB_URL = 'https://snfcjitzkglpqetglize.supabase.co';
 const SB_KEY = 'sb_publishable_iFD2y5yQJqnl7jPigiwCGA_AKhxuPhe';
 const SYNC_KEY = 'budgetnest.sync';
+// Data set aside when a device is signed out with entries that may not be in the account. Offered back at the next sign-in.
+const LEFT_KEY = 'budgetnest.leftover';
 const COLLECTIONS = ['transactions', 'recurring', 'emis', 'plans', 'debts'];
 
 function loadSync() {
@@ -297,18 +299,54 @@ function dropSession() {
   saveSync();
 }
 
-// Ends the session and clears the account's data from this device, leaving the welcome screen.
-function signOutNow() {
-  const token = sync.session && sync.session.access_token;
-  if (token) sb('/auth/v1/logout', { method: 'POST', token }).catch(() => {});
-  clearTimeout(pushTimer);
-  dropSession();
+// Empties the device's data but keeps the currency and appearance, so the welcome screen is shown.
+function resetState() {
   const { currency, theme } = state.settings;
   state = blankState();
   state.settings.currency = currency; state.settings.theme = theme;
   fmtCache = {};
   try { localStorage.removeItem(OLD_KEY); } catch (e) { /* ignore */ }
   saveLocal();
+}
+
+function readLeftover() {
+  try {
+    const left = JSON.parse(localStorage.getItem(LEFT_KEY));
+    return validState(left) ? sanitize(left) : null;
+  } catch (e) { return null; }
+}
+// Sets the current data aside (adding to anything already set aside) so it can be offered back after signing in.
+function setAside() {
+  if (!hasData(state)) return;
+  const earlier = readLeftover();
+  try { localStorage.setItem(LEFT_KEY, JSON.stringify(earlier ? mergeStates(earlier, state) : state)); } catch (e) { /* ignore */ }
+}
+const dropLeftover = () => { try { localStorage.removeItem(LEFT_KEY); } catch (e) { /* ignore */ } };
+// Entries set aside on this device that the signed-in account does not have.
+function leftoverExtras(left) {
+  return sum(COLLECTIONS, (k) => left[k].filter((x) => !state[k].some((y) => y.id === x.id)).length);
+}
+function offerLeftover() {
+  const left = readLeftover();
+  if (!left || !sync.session) return;
+  const n = leftoverExtras(left);
+  if (!n) return dropLeftover();
+  openSheet('Entries left on this device', `
+    <p>This device still has ${plural(n, 'entry').replace('entrys', 'entries')} from before you signed out that ${n === 1 ? 'is' : 'are'} not in this account.</p>
+    <button class="btn" data-act="leftover" data-id="add">Add ${n === 1 ? 'it' : 'them'} to this account</button>
+    <button class="btn ghost" data-act="leftover" data-id="drop">Discard ${n === 1 ? 'it' : 'them'}</button>`);
+}
+
+// Ends the session and clears the account's data from this device, leaving the welcome screen.
+// Changes that could not be saved online are set aside and offered back at the next sign-in.
+function signOutNow() {
+  const token = sync.session && sync.session.access_token;
+  if (token) sb('/auth/v1/logout', { method: 'POST', token }).catch(() => {});
+  clearTimeout(pushTimer);
+  if (sync.dirty) setAside();
+  dropSession();
+  try { localStorage.removeItem(SYNC_KEY); } catch (e) { /* ignore */ }
+  resetState();
   Object.assign(ui, { tab: 'home', home: 'month', month: curYM(), filter: 'all', search: '', bar: null, bills: 'month', planner: 'plans' });
   lastTabIndex = null;
   render(); window.scrollTo(0, 0); toast('Signed out');
@@ -446,6 +484,7 @@ async function afterSignIn() {
   saveSync();
   closeSheet(); render();
   await syncNow();
+  offerLeftover();
 }
 
 function chooseSheet() {
@@ -1387,6 +1426,7 @@ function txSheet(tx, preset = {}) {
   const linked = !!(v.recurringId || v.emiId);
   const fixedType = linked || (!tx && !!preset.lockType);
   const date = tx ? tx.date : preset.date || (ui.month === curYM() || ui.tab !== 'home' ? today() : ui.month + '-01');
+  const bill = v.recurringId ? state.recurring.find((r) => r.id === v.recurringId) : null;
   const hidden = ['recurringId', 'emiId', 'planId', 'period'].map((k) => `<input type="hidden" name="${k}" value="${esc(v[k] || '')}">`).join('');
   openSheet(preset.title || (tx ? 'Edit' : preset.lockType ? ADD_TITLE[type] : 'Add'), `
     <form data-form="tx" novalidate>
@@ -1404,6 +1444,7 @@ function txSheet(tx, preset = {}) {
       ${!tx && preset.canSkip ? `<button type="button" class="btn ghost" data-act="skip-due" data-id="${v.recurringId}" data-period="${v.period}">Skip this month</button>` : ''}
       ${tx && !linked && tx.type !== 'income' ? `<button type="button" class="btn ghost" data-act="tx-to-bill" data-id="${tx.id}">Make this a monthly bill</button>` : ''}
       ${tx ? `<button type="button" class="btn danger" data-act="del-tx" data-id="${tx.id}">Delete</button>` : ''}
+      ${bill ? billBlock(bill) : ''}
     </form>`);
 }
 
@@ -1422,14 +1463,45 @@ function catSheet(c, type, group) {
         <option value="secondary" ${(c ? c.group : group) === 'secondary' ? 'selected' : ''}>Secondary (side hustle, bonus, gifts)</option></select></label>` : ''}
       ${kind === 'expense' ? `<label class="field"><span>Monthly limit (optional)</span>
         <input type="text" inputmode="decimal" name="budget" placeholder="No limit" autocomplete="off" value="${c && c.budget ? c.budget : ''}"></label>` : ''}
-      ${kind === 'saving' ? `<label class="field"><span>Amount already in this fund (optional)</span>
-        <input type="text" inputmode="decimal" name="opening" placeholder="0" autocomplete="off" value="${c && c.opening ? c.opening : ''}"></label>
-        <p class="note" style="margin:-4px 0 14px">Money you had saved before you started using the app. It counts in your total, not in any month.</p>
-        <label class="field"><span>Target amount (optional)</span>
+      ${kind === 'saving' && !c ? `<label class="field"><span>Amount already in this fund (optional)</span>
+        <input type="text" inputmode="decimal" name="opening" placeholder="0" autocomplete="off"></label>
+        <p class="note" style="margin:-4px 0 14px">Money you had saved before you started using the app. It counts in your total, not in any month.</p>` : ''}
+      ${kind === 'saving' ? `<label class="field"><span>Target amount (optional)</span>
         <input type="text" inputmode="decimal" name="target" placeholder="No target" autocomplete="off" value="${c && c.target ? c.target : ''}"></label>` : ''}
       <button class="btn">${c ? 'Save changes' : 'Add'}</button>
       ${c ? `<button type="button" class="btn danger" data-act="del-cat" data-id="${c.id}">Delete</button>` : ''}
     </form>`);
+}
+
+const recChangeButtons = (r) => `<button type="button" class="btn ghost" data-act="rec-change" data-id="${r.id}" data-dir="up">▲ Increase</button>
+        <button type="button" class="btn ghost" data-act="rec-change" data-id="${r.id}" data-dir="down">▼ Decrease</button>`;
+
+// When a bill's amount went up or down, oldest first. Empty when it never changed.
+function recHistoryHtml(r, removable) {
+  const changes = r.changes || [];
+  if (!changes.length) return '';
+  return `<div class="field"><span>Amount history</span><div class="list">
+    <div class="row"><span class="row-main"><span class="row-top"><span class="name">Started at ${fmt(r.amount)}</span></span>
+      <span class="row-sub">From ${ymLabel(r.start)}</span></span></div>
+    ${changes.map((c, i) => {
+      const diff = r3(c.amount - (i ? changes[i - 1].amount : r.amount));
+      return `<div class="row"><span class="row-main">
+      <span class="row-top"><span class="name">${diff >= 0 ? '▲ Increased' : '▼ Decreased'} by ${fmt(Math.abs(diff))} to ${fmt(c.amount)}</span>
+      ${removable ? `<button type="button" class="link" data-act="del-rec-change" data-id="${r.id}" data-from="${c.from}">Remove</button>` : ''}</span>
+      <span class="row-sub">From ${ymLabel(c.from)}</span></span></div>`;
+    }).join('')}</div></div>`;
+}
+
+// Shown when a bill is opened from the Bills list: what it costs now, buttons to raise or lower it, and its history.
+function billBlock(r) {
+  const per = r.frequency === 'yearly' ? 'a year' : 'a month';
+  const next = (r.changes || []).find((c) => c.from > curYM());
+  return `<div class="bill-block">
+    <div class="sec-head"><h2>Bill amount</h2><button type="button" class="link" data-act="edit-rec" data-id="${r.id}">Edit bill</button></div>
+    <p class="note" style="margin:0 0 12px">${fmt(recAmount(r, curYM()))} ${per} now${next ? `, ${fmt(next.amount)} from ${ymLabel(next.from)}` : ''}. Increase or decrease it for the months not paid yet.</p>
+    <div class="two" style="margin-bottom:14px">${recChangeButtons(r)}</div>
+    ${recHistoryHtml(r, false)}
+  </div>`;
 }
 
 function recSheet(r) {
@@ -1445,19 +1517,9 @@ function recSheet(r) {
         <label class="field"><span>${changes.length ? 'Starting amount' : 'Amount'}</span><input type="text" inputmode="decimal" name="amount" placeholder="0" autocomplete="off" value="${r ? r.amount : ''}"></label>
         <label class="field"><span>Category</span><select name="categoryId">${catOptions(type, r && r.categoryId)}</select></label>
       </div>
-      ${changes.length ? `<div class="field"><span>Amount history</span><div class="list">
-        <div class="row"><span class="row-main"><span class="row-top"><span class="name">Started at ${fmt(r.amount)}</span></span>
-          <span class="row-sub">From ${ymLabel(r.start)}</span></span></div>
-        ${changes.map((c, i) => {
-          const diff = r3(c.amount - (i ? changes[i - 1].amount : r.amount));
-          return `<div class="row"><span class="row-main">
-          <span class="row-top"><span class="name">${diff >= 0 ? '▲ Increased' : '▼ Decreased'} by ${fmt(Math.abs(diff))} to ${fmt(c.amount)}</span>
-          <button type="button" class="link" data-act="del-rec-change" data-id="${r.id}" data-from="${c.from}">Remove</button></span>
-          <span class="row-sub">From ${ymLabel(c.from)}</span></span></div>`;
-        }).join('')}</div></div>` : ''}
+      ${r ? recHistoryHtml(r, true) : ''}
       ${r ? `<div class="two" style="margin-bottom:14px">
-        <button type="button" class="btn ghost" data-act="rec-change" data-id="${r.id}" data-dir="up">▲ Increase</button>
-        <button type="button" class="btn ghost" data-act="rec-change" data-id="${r.id}" data-dir="down">▼ Decrease</button></div>` : ''}
+        ${recChangeButtons(r)}</div>` : ''}
       <div class="two">
         <label class="field"><span>Repeats</span><select name="frequency">
           <option value="monthly" ${freq === 'monthly' ? 'selected' : ''}>Every month</option>
@@ -1669,7 +1731,8 @@ function submitCat(f) {
   if (Number.isNaN(target) || target < 0) return toast('That target is not a valid number.');
   const data = { name, emoji: f.emoji.trim(), group: f.group === 'secondary' ? 'secondary' : 'primary', budget, opening, target };
   const existing = f.id && cat(f.id);
-  if (existing) Object.assign(existing, data);
+  // The amount already in a fund is set once, when the fund is created.
+  if (existing) Object.assign(existing, data, { opening: existing.opening || 0 });
   else state.categories.push({ id: uid(), type: TYPES.includes(f.type) ? f.type : 'expense', ...data });
   done();
 }
@@ -1866,6 +1929,13 @@ const actions = {
     saveSync(); closeSheet(); render();
     await syncNow();
     toast(sync.error ? syncStatus() : 'Synced');
+    offerLeftover();
+  },
+  'leftover': (el) => {
+    const left = readLeftover();
+    dropLeftover();
+    if (left && el.dataset.id === 'add') { state = mergeStates(state, left); fmtCache = {}; save(); toast('Added to your account'); }
+    closeSheet(); render();
   },
   // Signing out removes the account's data from this device. Anything not yet saved online is sent first.
   'sign-out': () => confirmSheet('Sign out?', 'Your data stays safe in your account and is removed from this device. Sign in again to get it back.', 'Sign out', async () => {
@@ -1874,8 +1944,8 @@ const actions = {
       await syncNow();
     }
     if (sync.dirty) {
-      return confirmSheet('Some changes are not saved online', 'Your latest changes could not be saved to your account, probably because there is no internet. If you sign out now, they are lost.',
-        'Sign out and lose them', signOutNow);
+      return confirmSheet('Some changes are not saved online', 'Your latest changes could not be saved to your account, probably because there is no internet. They are kept aside on this device, and you are asked about them when you sign in again.',
+        'Sign out anyway', signOutNow);
     }
     signOutNow();
   }),
@@ -1901,9 +1971,9 @@ const actions = {
     const had = (c && c.opening) || 0;
     const saved = r3(sum(rows, (t) => t.amount) + had);
     openSheet(catLabel(c), `<p>${fmt(saved)} saved in total${c && c.target > 0 ? `<br>${targetLine(saved, c.target)}` : ''}</p>
-      <div class="list">${c ? `<button class="row" data-act="edit-cat" data-id="${id}"><span class="row-main">
+      <div class="list">${c ? `${had ? `<div class="row"><span class="row-main">
         <span class="row-top"><span class="name">Already in this fund</span><span class="amt">${fmt(had)}</span></span>
-        <span class="row-sub">${had ? 'Saved before you started using the app. Tap to change.' : 'Tap to add money you had saved before using the app.'}</span></span></button>
+        <span class="row-sub">Saved before you started using the app.</span></span></div>` : ''}
         <button class="row" data-act="edit-cat" data-id="${id}"><span class="row-main">
         <span class="row-top"><span class="name">Target</span><span class="amt">${c.target > 0 ? fmt(c.target) : 'Not set'}</span></span>
         <span class="row-sub">${c.target > 0 ? 'The amount you want this fund to reach. Tap to change.' : 'Tap to set an amount you want this fund to reach.'}</span></span></button>` : ''}${sortedTx(rows).map((t) => `<button class="row" data-act="edit-tx" data-id="${t.id}"><span class="row-main">
@@ -2084,6 +2154,17 @@ window.fetaBack = () => {
 };
 
 /* ---------- Start ---------- */
+
+// A device that is signed out but still holds an account's data (an older version left it there, or the sign-in expired)
+// shows the welcome screen instead. The data is set aside and offered back after signing in.
+(() => {
+  let wasSignedIn = false;
+  try { wasSignedIn = localStorage.getItem(SYNC_KEY) != null; } catch (e) { /* ignore */ }
+  if (!wasSignedIn || sync.session) return;
+  setAside();
+  resetState();
+  try { localStorage.removeItem(SYNC_KEY); } catch (e) { /* ignore */ }
+})();
 
 applyTheme();
 render();

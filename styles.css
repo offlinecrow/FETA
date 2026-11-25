@@ -426,3 +426,7 @@ div.row:active { background: none; }
 .ring-text { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.1; }
 .ring-text .ring-pct { font-size: 19px; font-weight: 700; letter-spacing: -.02em; color: var(--ring); }
 .ring-text span:not(.ring-pct) { font-size: 11px; color: var(--ink2); }
+
+/* The bill's amount, change buttons and history under its pay form. */
+.bill-block { margin-top: 18px; padding-top: 4px; border-top: 1px solid var(--line); }
+.two > .btn { margin: 0; }
