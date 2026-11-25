@@ -129,6 +129,7 @@ h1, h2, h3, p { margin: 0; }
 .rank { display: flex; flex-direction: column; gap: 14px; }
 .rank-row .row-top { margin-bottom: 6px; }
 .rank-bar { height: 10px; border-radius: 0 4px 4px 0; background: var(--accent); min-width: 2px; }
+.rank-track { display: block; background: var(--track); border-radius: 0 4px 4px 0; }
 .share { color: var(--muted); font-weight: 400; margin-left: 6px; }
 .readout { font-size: 14px; color: var(--ink2); min-height: 20px; margin: 4px 0 10px; }
 .readout b { color: var(--ink); }
@@ -390,3 +391,30 @@ div.row:active { background: none; }
   .tab-pill { transition: none; }
   .view.from-right, .view.from-left { animation: none; }
 }
+
+/* The switch and the month changer at the top stay in place while the page scrolls under them, blurred. */
+.sticky-top {
+  position: sticky; top: env(safe-area-inset-top); z-index: 5;
+  margin: -8px -16px 6px; padding: 8px 16px 10px;
+  background: color-mix(in srgb, var(--bg) 68%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(180%); backdrop-filter: blur(18px) saturate(180%);
+}
+.sticky-top > :last-child, .top.sticky-top .seg:last-child { margin-bottom: 0; }
+/* The same blur behind the phone's status bar, so nothing shows through above the sticky bar. */
+#app::before {
+  content: ""; position: fixed; top: 0; left: 0; right: 0; z-index: 5; height: env(safe-area-inset-top);
+  background: color-mix(in srgb, var(--bg) 68%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(180%); backdrop-filter: blur(18px) saturate(180%);
+}
+
+/* Home: ring showing the share of income spent. */
+.hero-row { display: flex; align-items: center; gap: 12px; }
+.hero-main { flex: 1; min-width: 0; }
+.ring { position: relative; flex: none; width: 88px; height: 88px; }
+.ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.ring circle { fill: none; stroke-width: 4; }
+.ring-track { stroke: var(--line); }
+.ring-arc { stroke: var(--ring); stroke-linecap: round; }
+.ring-text { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.1; }
+.ring-text .ring-pct { font-size: 19px; font-weight: 700; letter-spacing: -.02em; color: var(--ring); }
+.ring-text span:not(.ring-pct) { font-size: 11px; color: var(--ink2); }

@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '18';
+const APP_VERSION = '26';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -27,7 +27,7 @@ const DEFAULT_CATEGORIES = [
   ['income', 'secondary', 'Side hustle', '💻'], ['income', 'secondary', 'Bonus', '🎉'], ['income', 'secondary', 'Gift received', '🎁'],
   ['income', 'secondary', 'Other income', '➕'],
   ['expense', '', 'House', '🏠'], ['expense', '', 'Groceries', '🛒'], ['expense', '', 'Bills & utilities', '💡'],
-  ['expense', '', 'Children', '🧒'], ['expense', '', 'Family', '👪'], ['expense', '', 'Health', '💊'],
+  ['expense', '', 'Children', '🧒'], ['expense', '', 'Family', '👪'], ['expense', '', 'Pet', '🐾'], ['expense', '', 'Health', '💊'],
   ['expense', '', 'Household help', '🧹'], ['expense', '', 'Subscriptions', '📺'], ['expense', '', 'EMI & loans', '💳'],
   ['expense', '', 'Clothing', '👕'], ['expense', '', 'Transport', '🚌'], ['expense', '', 'Eating out', '🍽️'],
   ['expense', '', 'Gym', '🏋️'], ['expense', '', 'Hobby', '🎨'], ['expense', '', 'Travel', '✈️'],
@@ -131,7 +131,11 @@ function sanitize(s) {
   out.settings.started = !!s.settings.started;
   out.categories = arr(s.categories).map((c) => ({
     id: c.id, type: type(c.type), group: c.group === 'secondary' ? 'secondary' : 'primary',
-    name: str(c.name, 40) || 'Category', emoji: str(c.emoji, 8), budget: pos(c.budget)
+    name: str(c.name, 40) || 'Category', emoji: str(c.emoji, 8), budget: pos(c.budget),
+    // Money that was already in a savings fund before the app was used.
+    opening: c.type === 'saving' ? pos(c.opening) : 0,
+    // The amount a savings fund is meant to reach.
+    target: c.type === 'saving' ? pos(c.target) : 0
   }));
   out.transactions = arr(s.transactions).filter((t) => isDate(t.date)).map((t) => ({
     id: t.id, type: type(t.type), amount: Math.abs(num(t.amount)), categoryId: ref(t.categoryId), date: t.date,
@@ -142,7 +146,10 @@ function sanitize(s) {
     id: r.id, type: type(r.type), name: str(r.name, 60) || 'Repeating item', amount: pos(r.amount), categoryId: ref(r.categoryId),
     frequency: r.frequency === 'yearly' ? 'yearly' : 'monthly', day: day(r.day), month: Math.min(12, Math.max(1, Math.round(num(r.month)) || 1)),
     start: isYM(r.start) ? r.start : curYM(), end: isYM(r.end) ? r.end : '', paused: !!r.paused,
-    skips: Array.isArray(r.skips) ? r.skips.filter(isYM) : [], note: str(r.note, 120)
+    skips: Array.isArray(r.skips) ? r.skips.filter(isYM) : [], note: str(r.note, 120),
+    // Amount changes: from the given month onward the item costs the new amount.
+    changes: (Array.isArray(r.changes) ? r.changes : []).filter((c) => c && isYM(c.from) && pos(c.amount) > 0)
+      .map((c) => ({ from: c.from, amount: pos(c.amount) })).sort((a, b) => (a.from < b.from ? -1 : 1))
   }));
   out.emis = arr(s.emis).map((e) => {
     const monthly = pos(e.monthly);
@@ -288,6 +295,23 @@ function dropSession() {
   sync.session = null; sync.rev = 0; sync.dirty = false; sync.last = ''; sync.error = '';
   pendingRemote = null;
   saveSync();
+}
+
+// Ends the session and clears the account's data from this device, leaving the welcome screen.
+function signOutNow() {
+  const token = sync.session && sync.session.access_token;
+  if (token) sb('/auth/v1/logout', { method: 'POST', token }).catch(() => {});
+  clearTimeout(pushTimer);
+  dropSession();
+  const { currency, theme } = state.settings;
+  state = blankState();
+  state.settings.currency = currency; state.settings.theme = theme;
+  fmtCache = {};
+  try { localStorage.removeItem(OLD_KEY); } catch (e) { /* ignore */ }
+  saveLocal();
+  Object.assign(ui, { tab: 'home', home: 'month', month: curYM(), filter: 'all', search: '', bar: null, bills: 'month', planner: 'plans' });
+  lastTabIndex = null;
+  render(); window.scrollTo(0, 0); toast('Signed out');
 }
 
 async function freshToken() {
@@ -575,6 +599,19 @@ function emiStats(e) {
     total: r3(e.monthly * e.tenure), left: r3(open.length * e.monthly) };
 }
 
+// What a repeating item costs in a given month: its starting amount, or the latest change that has taken effect by then.
+function recAmount(r, ym) {
+  let amount = r.amount;
+  for (const c of r.changes || []) if (c.from <= ym) amount = c.amount;
+  return amount;
+}
+// The first month, from this month on, that has not been paid yet.
+function firstUnpaidMonth(r) {
+  let ym = r.start > curYM() ? r.start : curYM();
+  for (let i = 0; i < 36 && state.transactions.some((t) => t.recurringId === r.id && t.period === ym); i++) ym = addMonths(ym, 1);
+  return ym;
+}
+
 // Everything that repeats and falls in the given month: repeating items and EMI instalments, each paid or not.
 function dueItems(ym) {
   const month = Number(ym.slice(5, 7));
@@ -584,7 +621,7 @@ function dueItems(ym) {
     if (r.frequency === 'yearly' && r.month !== month) continue;
     const paid = state.transactions.find((t) => t.recurringId === r.id && t.period === ym) || null;
     if (r.paused && !paid) continue;
-    items.push({ key: 'rec:' + r.id, kind: 'rec', ref: r, name: r.name, type: r.type, amount: r.amount, categoryId: r.categoryId,
+    items.push({ key: 'rec:' + r.id, kind: 'rec', ref: r, name: r.name, type: r.type, amount: recAmount(r, ym), categoryId: r.categoryId,
       date: dateIn(ym, r.day), paid, skipped: !paid && r.skips.includes(ym) });
   }
   for (const e of state.emis) {
@@ -764,7 +801,7 @@ const WELCOME_POINTS = [
   ['🏦', 'Savings', 'Set money aside into funds, such as a children’s fund or an emergency fund.'],
   ['🔮', 'Upcoming months', 'See the fixed expenses waiting in each coming month, with a total.'],
   ['🎯', 'Plans', 'List what you want to buy later and how much to save for it each month.'],
-  ['🤝', 'Receivable and payable', 'Keep track of money people owe you and money you owe.'],
+  ['🤝', 'Money owed', 'Keep track of money people owe you and money you owe.'],
   ['📊', 'Reports', 'Totals by day, month and year, and by category.']
 ];
 
@@ -801,6 +838,19 @@ function homeListHtml() {
 const homeSwitch = () => segButtons('home-mode', [['month', 'Month report'], ['year', 'Year report']], ui.home);
 
 // The whole year at a glance: totals, then one line per month. Tapping a month opens it.
+// A ring showing how much of the income has been spent. It is green when little is spent and turns red as it nears 100%.
+function spendRing(income, expense) {
+  if (!(income > 0) && !(expense > 0)) return '';
+  const share = income > 0 ? expense / income : 1;
+  const fill = Math.min(1, share);
+  const pct = income > 0 ? `${Math.round(share * 100)}%` : '100%+';
+  const C = 2 * Math.PI * 15.5;
+  return `<div class="ring" role="img" aria-label="${income > 0 ? `${pct} of income spent` : 'Spending with no income recorded'}" style="--ring:hsl(${Math.round(130 * (1 - fill))} 68% 44%)">
+    <svg viewBox="0 0 36 36" aria-hidden="true"><circle class="ring-track" cx="18" cy="18" r="15.5"/>
+      <circle class="ring-arc" cx="18" cy="18" r="15.5" stroke-dasharray="${(fill * C).toFixed(2)} ${C.toFixed(2)}"/></svg>
+    <div class="ring-text"><span class="ring-pct">${pct}</span><span>spent</span></div></div>`;
+}
+
 function viewHomeYear() {
   const year = ui.month.slice(0, 4);
   const list = state.transactions.filter((t) => t.date.startsWith(year));
@@ -808,7 +858,7 @@ function viewHomeYear() {
   const rows = Array.from({ length: 12 }, (_, i) => `${year}-${pad(i + 1)}`).map((ym) => ({ ym, t: totalsOf(list.filter((x) => x.date.startsWith(ym))) }));
   const active = rows.filter((r) => r.t.income || r.t.expense || r.t.saving);
   const rate = t.income > 0 ? Math.round((t.saving / t.income) * 100) : 0;
-  return `<header class="top">
+  return `<header class="top sticky-top">
       ${homeSwitch()}
       <div class="month-nav">
         <button class="nav-btn" data-act="home-year" data-d="-1" aria-label="Previous year">‹</button>
@@ -819,9 +869,11 @@ function viewHomeYear() {
     </header>
     ${androidUpdateCard()}
     <section class="card">
+      <div class="hero-row"><div class="hero-main">
       <div class="label">Left this year</div>
       <div class="hero-num ${t.balance < 0 ? 'neg' : ''}">${fmt(t.balance)}</div>
       <div class="sub">Income minus expenses and savings${active.length ? ` · about ${fmt(Math.round(t.expense / active.length))} spent a month` : ''}</div>
+      </div>${spendRing(t.income, t.expense)}</div>
       <div class="kpis three" style="margin-top:14px">
         <div class="kpi"><div class="label">Income</div><div class="v">${fmt(t.income)}</div></div>
         <div class="kpi"><div class="label">Expenses</div><div class="v">${fmt(t.expense)}</div></div>
@@ -865,16 +917,18 @@ function viewHome() {
     </button>`;
   }
 
-  return `<header class="top">
+  return `<header class="top sticky-top">
       ${homeSwitch()}
       ${monthNav(ym, 'month')}
       ${isNow ? '' : '<button class="link center" data-act="month-now">Back to this month</button>'}
     </header>
     ${androidUpdateCard()}
     <section class="card">
+      <div class="hero-row"><div class="hero-main">
       <div class="label">Left this month</div>
       <div class="hero-num ${t.balance < 0 ? 'neg' : ''}">${fmt(t.balance)}</div>
       <div class="sub">Income minus expenses and savings</div>
+      </div>${spendRing(t.income, t.expense)}</div>
       <div class="kpis three" style="margin-top:14px">
         <div class="kpi"><div class="label">Income</div><div class="v">${fmt(t.income)}</div></div>
         <div class="kpi"><div class="label">Expenses</div><div class="v">${fmt(t.expense)}</div></div>
@@ -884,8 +938,8 @@ function viewHome() {
     ${dueCard}
     ${recv || pay ? `<button class="card tap" data-act="open-owed">
       <div class="kpis" style="margin:0;padding:0;border:0">
-        <div class="kpi"><div class="label">Receivable</div><div class="v">${fmt(recv)}</div></div>
-        <div class="kpi"><div class="label">Payable</div><div class="v">${fmt(pay)}</div></div>
+        <div class="kpi"><div class="label">Owed to me</div><div class="v">${fmt(recv)}</div></div>
+        <div class="kpi"><div class="label">I owe</div><div class="v">${fmt(pay)}</div></div>
       </div></button>` : ''}
     <div class="sec-head"><h2>Transactions</h2></div>
     ${segButtons('filter', [['all', 'All'], ['expense', 'Expenses'], ['income', 'Income'], ['saving', 'Savings']], ui.filter)}
@@ -922,7 +976,8 @@ function emiRow(e) {
 
 function recurLine(r) {
   const when = r.frequency === 'yearly' ? `every year on ${r.day} ${monthNameOf(r.month)}` : `every month on day ${r.day}`;
-  return `${fmt(r.amount)} · ${when}${r.paused ? ' · paused' : ''}`;
+  const next = (r.changes || []).find((c) => c.from > curYM());
+  return `${fmt(recAmount(r, curYM()))} · ${when}${next ? ` · ${fmt(next.amount)} from ${ymShort(next.from)}` : ''}${r.paused ? ' · paused' : ''}`;
 }
 
 function billsHead() {
@@ -941,12 +996,14 @@ function viewBillsMonth() {
   const paidCount = out.filter((it) => it.paid).length;
   const openOut = sum(out.filter(isOpen), (it) => it.amount);
   const yearly = state.recurring.filter((r) => r.frequency === 'yearly' && !r.paused && r.type !== 'income');
-  const setAside = sum(yearly, (r) => r.amount / 12);
+  const setAside = sum(yearly, (r) => recAmount(r, curYM()) / 12);
 
   return `<header class="top"><h1>Bills</h1></header>
-    ${billsHead()}
-    ${monthNav(ym, 'month')}
-    ${ym === curYM() ? '' : '<button class="link center" data-act="month-now">Back to this month</button>'}
+    <div class="sticky-top">
+      ${billsHead()}
+      ${monthNav(ym, 'month')}
+      ${ym === curYM() ? '' : '<button class="link center" data-act="month-now">Back to this month</button>'}
+    </div>
     <div class="sec-head"><h2>To pay</h2><span class="sub">${out.length ? `${paidCount} of ${out.length} paid · ${fmt(openOut)} unpaid` : ''}</span></div>
     <div class="list">${out.length ? out.map(dueRow).join('') : '<div class="empty">No bills in this month yet. Add your rent, school fee, utility bills and subscriptions once, and they come back here every month as Unpaid until you pay them.</div>'}</div>
     <button class="btn ghost" style="margin-top:12px" data-act="add-rec">+ Add a monthly bill</button>
@@ -958,7 +1015,7 @@ function viewBillsMonth() {
         <span class="row-main"><span class="row-top"><span class="name">${esc(r.name)}</span><span class="pill">${TYPE_LABEL[r.type]}</span></span>
         <span class="row-sub">${recurLine(r)}</span></span></button>`).join('')
       : '<div class="empty">Nothing repeating yet.</div>'}</div>
-    ${setAside ? `<p class="note" style="margin-top:10px">Your yearly items add up to ${fmt(sum(yearly, (r) => r.amount))}. Setting aside about ${fmt(Math.ceil(setAside))} a month covers them.</p>` : ''}`;
+    ${setAside ? `<p class="note" style="margin-top:10px">Your yearly items add up to ${fmt(sum(yearly, (r) => recAmount(r, curYM())))}. Setting aside about ${fmt(Math.ceil(setAside))} a month covers them.</p>` : ''}`;
 }
 
 function viewEmi() {
@@ -969,7 +1026,7 @@ function viewEmi() {
   const thisMonth = sum(dueItems(now).filter((it) => it.kind === 'emi'), (it) => it.amount);
   const lastEnd = running.map((x) => x.st.end).sort().pop();
   return `<header class="top"><h1>Bills</h1></header>
-    ${billsHead()}
+    <div class="sticky-top">${billsHead()}</div>
     <section class="card">
       <div class="label">EMI still to pay</div>
       <div class="hero-num small">${fmt(sum(running, (x) => x.st.left))}</div>
@@ -990,7 +1047,7 @@ function viewUpcoming() {
   const grand = sum(months, (m) => m.total);
   const peak = months.reduce((a, m) => (m.total > a.total ? m : a), months[0]);
   return `<header class="top"><h1>Bills</h1></header>
-    ${billsHead()}
+    <div class="sticky-top">${billsHead()}</div>
     <section class="card">
       <div class="label">Preset expenses, next ${ui.horizon} months</div>
       <div class="hero-num small">${fmt(grand)}</div>
@@ -1012,11 +1069,18 @@ function viewUpcoming() {
 
 /* ---------- Savings ---------- */
 
+// How far a savings fund is from the target set for it.
+function targetLine(v, target) {
+  if (v >= target) return `🎯 Target of ${fmt(target)} reached`;
+  return `${Math.floor((v / target) * 100)}% of the ${fmt(target)} target · ${fmt(r3(target - v))} to go`;
+}
+
 function viewSavings() {
   const all = state.transactions.filter((t) => t.type === 'saving');
   const year = ui.saveYear;
   const inYear = all.filter((t) => t.date.startsWith(year));
-  const total = sum(all, (t) => t.amount);
+  const opening = sum(catsOf('saving'), (c) => c.opening || 0);
+  const total = r3(sum(all, (t) => t.amount) + opening);
   const yearTotal = sum(inYear, (t) => t.amount);
   const thisMonth = sum(all.filter((t) => t.date.startsWith(curYM())), (t) => t.amount);
   const monthsUsed = new Set(inYear.map((t) => t.date.slice(0, 7))).size;
@@ -1024,6 +1088,7 @@ function viewSavings() {
   const rate = yearIncome > 0 ? Math.round((yearTotal / yearIncome) * 100) : 0;
 
   const byFund = {};
+  for (const c of catsOf('saving')) if (c.opening > 0 || c.target > 0) byFund[c.id] = c.opening || 0;
   for (const t of all) { const k = cat(t.categoryId) ? t.categoryId : ''; byFund[k] = r3((byFund[k] || 0) + t.amount); }
   const funds = Object.entries(byFund).map(([id, v]) => ({ id, c: cat(id), v })).sort((a, z) => z.v - a.v);
   const top = funds.length ? funds[0].v : 0;
@@ -1039,7 +1104,7 @@ function viewSavings() {
     <section class="card">
       <div class="label">Saved in total</div>
       <div class="hero-num">${fmt(total)}</div>
-      <div class="sub">Everything you have set aside so far</div>
+      <div class="sub">${opening > 0 ? `Includes ${fmt(opening)} you already had` : 'Everything you have set aside so far'}</div>
       <div class="kpis three" style="margin-top:14px">
         <div class="kpi"><div class="label">This month</div><div class="v">${fmt(thisMonth)}</div></div>
         <div class="kpi"><div class="label">In ${year}</div><div class="v">${fmt(yearTotal)}</div>${rate ? `<div class="s">${rate}% of income</div>` : ''}</div>
@@ -1051,8 +1116,10 @@ function viewSavings() {
     <section class="card">
       <div class="sec-head" style="margin-top:0"><h2>By fund</h2><button class="link" data-act="add-cat" data-type="saving">+ New fund</button></div>
       ${funds.length ? `<div class="rank">${funds.map(({ id, c, v }) => `<button class="rank-row" data-act="fund" data-id="${id}">
-        <span class="row-top"><span class="name">${esc(catLabel(c))}</span><span class="amt">${fmt(v)}<span class="share">${Math.round((v / total) * 100)}%</span></span></span>
-        <span class="rank-bar" style="width:${(v / top) * 100}%"></span></button>`).join('')}</div>`
+        <span class="row-top"><span class="name">${esc(catLabel(c))}</span><span class="amt">${fmt(v)}${total > 0 ? `<span class="share">${Math.round((v / total) * 100)}%</span>` : ''}</span></span>
+        ${c && c.target > 0 ? `<span class="rank-track"><span class="rank-bar" style="width:${Math.min(100, (v / c.target) * 100)}%"></span></span>
+        <span class="row-sub">${targetLine(v, c.target)}</span>`
+          : `<span class="rank-bar" style="width:${top > 0 ? (v / top) * 100 : 0}%"></span>`}</button>`).join('')}</div>`
         : '<div class="empty">Nothing saved yet. Tap “Add savings” to record money you set aside, such as a children’s fund or an emergency fund.</div>'}
     </section>
 
@@ -1149,12 +1216,12 @@ function viewReports() {
   }
 
   return `<header class="top"><h1>Reports</h1></header>
-    ${segButtons('rep-period', [['day', 'Day'], ['month', 'Month'], ['year', 'Year']], period)}
+    <div class="sticky-top">${segButtons('rep-period', [['day', 'Day'], ['month', 'Month'], ['year', 'Year']], period)}
     <div class="month-nav">
       <button class="nav-btn" data-act="rep-nav" data-d="-1" aria-label="Previous">‹</button>
       <div class="month-title small">${label}</div>
       <button class="nav-btn" data-act="rep-nav" data-d="1" aria-label="Next">›</button>
-    </div>
+    </div></div>
     <section class="card">
       <div class="kpis" style="margin:0;padding:0;border:0">
         <div class="kpi"><div class="label">Income</div><div class="v">${fmt(t.income)}</div></div>
@@ -1223,12 +1290,12 @@ function viewPlanner() {
     const recv = tab === 'receivable';
     body = `<section class="card"><div class="label">${recv ? 'People owe you' : 'You owe'}</div><div class="hero-num small">${fmt(debtTotal(tab))}</div>
         <div class="sub">${plural(open.length, 'open item')}</div></section>
-      <div class="sec-head"><h2>${recv ? 'Receivable' : 'Payable'}</h2><button class="link" data-act="add-debt">+ Add</button></div>
+      <div class="sec-head"><h2>${recv ? 'Owed to me' : 'I owe'}</h2><button class="link" data-act="add-debt">+ Add</button></div>
       <div class="list">${open.length ? open.map(debtRow).join('') : `<div class="empty">${recv ? 'Money someone owes you, such as a loan to a friend or unpaid salary.' : 'Money you owe, such as a loan from family or a credit card balance.'}</div>`}</div>
       ${closed.length ? `<div class="sec-head"><h2>Settled</h2></div><div class="list">${closed.map(debtRow).join('')}</div>` : ''}`;
   }
   return `<header class="top"><h1>Planner</h1></header>
-    ${segButtons('planner', [['plans', 'Plans'], ['receivable', 'Receivable'], ['payable', 'Payable']], tab)}
+    <div class="sticky-top">${segButtons('planner', [['plans', 'Plans'], ['receivable', 'Owed to me'], ['payable', 'I owe']], tab)}</div>
     ${body}`;
 }
 
@@ -1239,7 +1306,7 @@ function viewMore() {
   const catList = (title, list, type, group) => `<div class="sec-head"><h2>${title}</h2><button class="link" data-act="add-cat" data-type="${type}" data-group="${group || ''}">+ Add</button></div>
     <div class="list">${list.length ? list.map((c) => `<button class="row" data-act="edit-cat" data-id="${c.id}">
       <span class="emoji" aria-hidden="true">${esc(c.emoji || '•')}</span>
-      <span class="row-main"><span class="row-top"><span class="name">${esc(c.name)}</span>${c.budget ? `<span class="row-sub">limit ${fmt(c.budget)}/month</span>` : ''}</span></span></button>`).join('')
+      <span class="row-main"><span class="row-top"><span class="name">${esc(c.name)}</span>${c.budget ? `<span class="row-sub">limit ${fmt(c.budget)}/month</span>` : c.opening || c.target ? `<span class="row-sub">${[c.opening ? `already had ${fmt(c.opening)}` : '', c.target ? `target ${fmt(c.target)}` : ''].filter(Boolean).join(' · ')}</span>` : ''}</span></span></button>`).join('')
       : '<div class="empty">None yet.</div>'}</div>`;
   const inc = catsOf('income');
   const account = sync.session
@@ -1355,6 +1422,11 @@ function catSheet(c, type, group) {
         <option value="secondary" ${(c ? c.group : group) === 'secondary' ? 'selected' : ''}>Secondary (side hustle, bonus, gifts)</option></select></label>` : ''}
       ${kind === 'expense' ? `<label class="field"><span>Monthly limit (optional)</span>
         <input type="text" inputmode="decimal" name="budget" placeholder="No limit" autocomplete="off" value="${c && c.budget ? c.budget : ''}"></label>` : ''}
+      ${kind === 'saving' ? `<label class="field"><span>Amount already in this fund (optional)</span>
+        <input type="text" inputmode="decimal" name="opening" placeholder="0" autocomplete="off" value="${c && c.opening ? c.opening : ''}"></label>
+        <p class="note" style="margin:-4px 0 14px">Money you had saved before you started using the app. It counts in your total, not in any month.</p>
+        <label class="field"><span>Target amount (optional)</span>
+        <input type="text" inputmode="decimal" name="target" placeholder="No target" autocomplete="off" value="${c && c.target ? c.target : ''}"></label>` : ''}
       <button class="btn">${c ? 'Save changes' : 'Add'}</button>
       ${c ? `<button type="button" class="btn danger" data-act="del-cat" data-id="${c.id}">Delete</button>` : ''}
     </form>`);
@@ -1363,15 +1435,20 @@ function catSheet(c, type, group) {
 function recSheet(r) {
   const type = r ? r.type : 'expense';
   const freq = r ? r.frequency : 'monthly';
+  const changes = (r && r.changes) || [];
   openSheet(r ? 'Edit bill or repeating item' : 'New monthly bill', `
     <form data-form="rec" novalidate>
       <input type="hidden" name="id" value="${r ? r.id : ''}">
       ${typeRadios(type)}
       <label class="field"><span>Name</span><input type="text" name="name" maxlength="60" autocomplete="off" placeholder="House rent, school fee, salary…" value="${esc(r ? r.name : '')}" ${r ? '' : 'data-autofocus'}></label>
       <div class="two">
-        <label class="field"><span>Amount</span><input type="text" inputmode="decimal" name="amount" placeholder="0" autocomplete="off" value="${r ? r.amount : ''}"></label>
+        <label class="field"><span>${changes.length ? 'Starting amount' : 'Amount'}</span><input type="text" inputmode="decimal" name="amount" placeholder="0" autocomplete="off" value="${r ? r.amount : ''}"></label>
         <label class="field"><span>Category</span><select name="categoryId">${catOptions(type, r && r.categoryId)}</select></label>
       </div>
+      ${changes.length ? `<div class="list" style="margin-bottom:12px">${changes.map((c) => `<div class="row"><span class="row-main">
+        <span class="row-top"><span class="name">${fmt(c.amount)} from ${ymLabel(c.from)}</span>
+        <button type="button" class="link" data-act="del-rec-change" data-id="${r.id}" data-from="${c.from}">Remove</button></span></span></div>`).join('')}</div>` : ''}
+      ${r ? `<button type="button" class="btn ghost" style="margin-bottom:14px" data-act="rec-change" data-id="${r.id}">Change the amount from a month</button>` : ''}
       <div class="two">
         <label class="field"><span>Repeats</span><select name="frequency">
           <option value="monthly" ${freq === 'monthly' ? 'selected' : ''}>Every month</option>
@@ -1385,6 +1462,21 @@ function recSheet(r) {
       ${r ? `<label class="check"><input type="checkbox" name="paused" ${r.paused ? 'checked' : ''}><span>Paused</span></label>` : ''}
       <button class="btn">${r ? 'Save changes' : 'Add'}</button>
       ${r ? `<button type="button" class="btn danger" data-act="del-rec" data-id="${r.id}">Delete</button>` : ''}
+    </form>`);
+}
+
+// A rent or fee that goes up: the new amount applies from the chosen month, and earlier months keep the old one.
+function recChangeSheet(r) {
+  const from = firstUnpaidMonth(r);
+  openSheet(`Change amount: ${r.name}`, `
+    <form data-form="recchange" novalidate>
+      <input type="hidden" name="id" value="${r.id}">
+      <p>Now ${fmt(recAmount(r, from))} ${r.frequency === 'yearly' ? 'a year' : 'a month'}.</p>
+      <label class="field"><span>New amount</span><input type="text" inputmode="decimal" name="amount" placeholder="0" autocomplete="off" data-autofocus></label>
+      ${monthPicker('From which month', 'from', from)}
+      <p class="note">The new amount applies from that month onward. Payments you have already made stay as they are, and months before it keep the old amount.</p>
+      <button class="btn">Save new amount</button>
+      <button type="button" class="btn ghost" data-act="edit-rec" data-id="${r.id}">Back</button>
     </form>`);
 }
 
@@ -1509,7 +1601,7 @@ function debtDetailSheet(d) {
     </form>`}
     <button class="btn ghost" data-act="toggle-debt" data-id="${d.id}">${d.settled ? 'Reopen' : 'Mark as settled'}</button>
     <button class="btn ghost" data-act="edit-debt" data-id="${d.id}">Edit</button>
-    <p class="note" style="margin-top:12px">Receivable and payable are tracked on their own and do not change your monthly income or expenses.</p>`);
+    <p class="note" style="margin-top:12px">Money owed to you and money you owe are tracked on their own and do not change your monthly income or expenses.</p>`);
 }
 
 function syncRecForm(form) {
@@ -1543,7 +1635,11 @@ function submitCat(f) {
   if (!name) return toast('Give it a name.');
   const budget = amountOf(f.budget);
   if (Number.isNaN(budget) || budget < 0) return toast('That limit is not a valid number.');
-  const data = { name, emoji: f.emoji.trim(), group: f.group === 'secondary' ? 'secondary' : 'primary', budget };
+  const opening = amountOf(f.opening);
+  if (Number.isNaN(opening) || opening < 0) return toast('That amount is not a valid number.');
+  const target = amountOf(f.target);
+  if (Number.isNaN(target) || target < 0) return toast('That target is not a valid number.');
+  const data = { name, emoji: f.emoji.trim(), group: f.group === 'secondary' ? 'secondary' : 'primary', budget, opening, target };
   const existing = f.id && cat(f.id);
   if (existing) Object.assign(existing, data);
   else state.categories.push({ id: uid(), type: TYPES.includes(f.type) ? f.type : 'expense', ...data });
@@ -1564,8 +1660,20 @@ function submitRec(f) {
     day, month: Number(f.month) || 1, start, paused: !!f.paused };
   const existing = f.id && state.recurring.find((r) => r.id === f.id);
   if (existing) Object.assign(existing, data);
-  else state.recurring.push({ id: uid(), end: '', skips: [], note: '', ...data });
+  else state.recurring.push({ id: uid(), end: '', skips: [], note: '', changes: [], ...data });
   done();
+}
+
+function submitRecChange(f) {
+  const r = state.recurring.find((x) => x.id === f.id);
+  if (!r) return closeSheet();
+  const amount = parseAmount(f.amount);
+  if (!(amount > 0)) return toast('Enter an amount above zero.');
+  const from = pickedMonth(f, 'from');
+  if (!isYM(from)) return toast('Pick the month the new amount starts from.');
+  r.changes = (r.changes || []).filter((c) => c.from !== from).concat({ from, amount }).sort((a, b) => (a.from < b.from ? -1 : 1));
+  done();
+  toast(`${fmt(amount)} from ${ymLabel(from)}`);
 }
 
 function submitEmi(f, form) {
@@ -1728,12 +1836,17 @@ const actions = {
     await syncNow();
     toast(sync.error ? syncStatus() : 'Synced');
   },
-  'sign-out': () => confirmSheet('Sign out?', sync.dirty
-    ? 'Some changes have not been synced yet. Your data stays on this device, but changes made while signed out are not backed up.'
-    : 'Your data stays on this device and in your account. Changes made while signed out are not backed up until you sign in again.', 'Sign out', () => {
-    const token = sync.session && sync.session.access_token;
-    if (token) sb('/auth/v1/logout', { method: 'POST', token }).catch(() => {});
-    dropSession(); render(); toast('Signed out');
+  // Signing out removes the account's data from this device. Anything not yet saved online is sent first.
+  'sign-out': () => confirmSheet('Sign out?', 'Your data stays safe in your account and is removed from this device. Sign in again to get it back.', 'Sign out', async () => {
+    if (sync.dirty) {
+      toast('Saving your latest changes…');
+      await syncNow();
+    }
+    if (sync.dirty) {
+      return confirmSheet('Some changes are not saved online', 'Your latest changes could not be saved to your account, probably because there is no internet. If you sign out now, they are lost.',
+        'Sign out and lose them', signOutNow);
+    }
+    signOutNow();
   }),
   'close-sheet': () => closeSheet(),
   'confirm-yes': () => { const fn = pendingConfirm; closeSheet(); if (fn) fn(); },
@@ -1753,8 +1866,16 @@ const actions = {
   'fund': (el) => {
     const id = el.dataset.id;
     const rows = state.transactions.filter((t) => t.type === 'saving' && (cat(t.categoryId) ? t.categoryId : '') === id);
-    openSheet(catLabel(cat(id)), `<p>${fmt(sum(rows, (t) => t.amount))} saved in total</p>
-      <div class="list">${sortedTx(rows).map((t) => `<button class="row" data-act="edit-tx" data-id="${t.id}"><span class="row-main">
+    const c = cat(id);
+    const had = (c && c.opening) || 0;
+    const saved = r3(sum(rows, (t) => t.amount) + had);
+    openSheet(catLabel(c), `<p>${fmt(saved)} saved in total${c && c.target > 0 ? `<br>${targetLine(saved, c.target)}` : ''}</p>
+      <div class="list">${c ? `<button class="row" data-act="edit-cat" data-id="${id}"><span class="row-main">
+        <span class="row-top"><span class="name">Already in this fund</span><span class="amt">${fmt(had)}</span></span>
+        <span class="row-sub">${had ? 'Saved before you started using the app. Tap to change.' : 'Tap to add money you had saved before using the app.'}</span></span></button>
+        <button class="row" data-act="edit-cat" data-id="${id}"><span class="row-main">
+        <span class="row-top"><span class="name">Target</span><span class="amt">${c.target > 0 ? fmt(c.target) : 'Not set'}</span></span>
+        <span class="row-sub">${c.target > 0 ? 'The amount you want this fund to reach. Tap to change.' : 'Tap to set an amount you want this fund to reach.'}</span></span></button>` : ''}${sortedTx(rows).map((t) => `<button class="row" data-act="edit-tx" data-id="${t.id}"><span class="row-main">
         <span class="row-top"><span class="name">${fmtDay(t.date)}, ${t.date.slice(0, 4)}</span><span class="amt">${fmt(t.amount)}</span></span>
         ${t.note ? `<span class="row-sub">${esc(t.note)}</span>` : ''}</span></button>`).join('')}</div>
       <button class="btn" data-act="add-saving-to" data-id="${id}">Add savings to this fund</button>`);
@@ -1795,6 +1916,13 @@ const actions = {
     toast('Now a monthly bill. It is marked paid for this month.');
   },
   'edit-rec': (el) => { const r = find(state.recurring, el); if (r) recSheet(r); },
+  'rec-change': (el) => { const r = find(state.recurring, el); if (r) recChangeSheet(r); },
+  'del-rec-change': (el) => {
+    const r = find(state.recurring, el);
+    if (!r) return;
+    r.changes = (r.changes || []).filter((c) => c.from !== el.dataset.from);
+    save(); render(); recSheet(r);
+  },
   'del-rec': (el) => confirmSheet('Delete this repeating item?', 'It stops appearing in Bills. Payments you already recorded stay in your history.', 'Delete', () => { remove('recurring', el.dataset.id); save(); render(); }),
 
   'add-emi': () => emiSheet(null),
@@ -1872,7 +2000,7 @@ document.addEventListener('click', (e) => {
   if (fn) fn(el);
 });
 
-const submitters = { auth: submitAuth, newpass: submitNewPass, tx: submitTx, cat: submitCat, rec: submitRec, emi: submitEmi, plan: submitPlan, debt: submitDebt, debtpay: submitDebtPay };
+const submitters = { auth: submitAuth, newpass: submitNewPass, tx: submitTx, cat: submitCat, rec: submitRec, recchange: submitRecChange, emi: submitEmi, plan: submitPlan, debt: submitDebt, debtpay: submitDebtPay };
 document.addEventListener('submit', (e) => {
   const form = e.target.closest('[data-form]');
   if (!form) return;
