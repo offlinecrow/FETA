@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '31';
+const APP_VERSION = '32';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -846,23 +846,29 @@ const WELCOME_POINTS = [
 
 function viewWelcome() {
   return `<div class="welcome">
-    <h1 class="brand">${LOGO_SVG}</h1>
-    <p class="tagline">Family Expense Tracker App</p>
-    <p class="lead">A simple way to track your family’s money. Note your income and spending as it happens, and always know what is left for the month.</p>
+    <div class="welcome-main">
+      <h1 class="brand">${LOGO_SVG}</h1>
+      <p class="tagline">Family Expense Tracker App</p>
+      <p class="lead">A simple way to track your family’s money. Note your income and spending as it happens, and always know what is left for the month.</p>
+      <label class="field"><span>Your currency</span><select data-setting="currency">${currencyOptions(state.settings.currency)}</select></label>
+      <button class="btn" data-act="open-account" data-id="signup">Create an account</button>
+      <button class="btn ghost" data-act="open-account" data-id="signin">I already have an account</button>
+      <button class="btn ghost" data-act="start">Use without an account</button>
+      <p class="note">With an account your data is backed up online and stays the same on every device you sign in on. Without one it stays only on this device. You can create an account later under More.</p>
+    </div>
+    <div class="welcome-foot">
+      <button class="link" data-act="welcome-points">What you can do</button>
+      <p class="note">Version ${APP_VERSION}</p>
+    </div>
+  </div>`;
+}
 
-    <h3>What you can do</h3>
+function welcomePointsSheet() {
+  openSheet('What you can do', `
     <div class="list points">${WELCOME_POINTS.map(([emoji, title, text]) => `<div class="row">
       <span class="emoji" aria-hidden="true">${emoji}</span>
       <span class="row-main"><span class="name">${title}</span><span class="point-text">${text}</span></span></div>`).join('')}</div>
-
-    <h3>Get started</h3>
-    <label class="field"><span>Your currency</span><select data-setting="currency">${currencyOptions(state.settings.currency)}</select></label>
-    <button class="btn" data-act="open-account" data-id="signup">Create an account</button>
-    <button class="btn ghost" data-act="open-account" data-id="signin">I already have an account</button>
-    <button class="btn ghost" data-act="start">Use without an account</button>
-    <p class="note" style="margin-top:14px">With an account your data is backed up online and stays the same on every device you sign in on. Without one it stays only on this device. You can create an account later under More.</p>
-    <p class="note" style="text-align:center;margin-top:24px">Version ${APP_VERSION}</p>
-  </div>`;
+    <button class="btn ghost" data-act="close-sheet" style="margin-top:14px">Close</button>`);
 }
 
 /* ---------- Home ---------- */
@@ -1889,6 +1895,7 @@ const remove = (key, id) => { state[key] = state[key].filter((x) => x.id !== id)
 const actions = {
   'tab': (el) => { ui.tab = el.dataset.id; ui.bar = null; render(); window.scrollTo(0, 0); },
   'start': () => { startApp(); save(); render(); },
+  'welcome-points': () => welcomePointsSheet(),
   'android-update': () => { if (androidUpdate) location.href = androidUpdate.url; },
   'update-app': async () => {
     toast('Getting the latest version…');

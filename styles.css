@@ -430,3 +430,18 @@ div.row:active { background: none; }
 /* The bill's amount, change buttons and history under its pay form. */
 .bill-block { margin-top: 18px; padding-top: 4px; border-top: 1px solid var(--line); }
 .two > .btn { margin: 0; }
+
+/* Welcome screen: logo, text and the sign-in actions centred on the screen; "What you can do" at the bottom. */
+.welcome {
+  display: flex; flex-direction: column; padding-top: 0; text-align: center;
+  min-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 44px);
+}
+.welcome-main { margin: auto 0; padding: 24px 0; }
+.welcome .brand { margin: 0 0 12px; }
+.welcome .brand-logo { margin: 0 auto; }
+.welcome .lead { margin-bottom: 26px; }
+.welcome .field > span { text-align: center; }
+.welcome-main .note { margin-top: 14px; }
+.welcome-foot { padding-top: 12px; }
+.welcome-foot .link { font-size: 16px; font-weight: 600; padding: 10px 14px; }
+.welcome-foot .note { margin-top: 6px; }
