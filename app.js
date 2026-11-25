@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '36';
+const APP_VERSION = '42';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -32,7 +32,7 @@ const DEFAULT_CATEGORIES = [
   ['expense', '', 'Clothing', '👕'], ['expense', '', 'Transport', '🚌'], ['expense', '', 'Eating out', '🍽️'],
   ['expense', '', 'Gym', '🏋️'], ['expense', '', 'Hobby', '🎨'], ['expense', '', 'Travel', '✈️'],
   ['expense', '', 'Gifts & donations', '🤲'], ['expense', '', 'Other', '📦'],
-  ['saving', '', 'General savings', '🏦'], ['saving', '', 'Children’s fund', '🧸'], ['saving', '', 'Emergency fund', '🛟']
+  ['saving', '', 'General savings', '🏦'], ['saving', '', 'Children’s savings', '🧸'], ['saving', '', 'Emergency savings', '🛟']
 ];
 
 const ICONS = {
@@ -358,7 +358,11 @@ async function freshToken() {
   try {
     setSession(await sb('/auth/v1/token?grant_type=refresh_token', { method: 'POST', body: { refresh_token: s.refresh_token } }));
   } catch (e) {
-    if (e.status === 400 || e.status === 401 || e.status === 403) { dropSession(); toast('Please sign in again.'); render(); }
+    if (e.status === 400 || e.status === 401 || e.status === 403) {
+      setAside(); dropSession();
+      try { localStorage.removeItem(SYNC_KEY); } catch (err) { /* ignore */ }
+      resetState(); closeSheet(); render(); toast('Please sign in again.');
+    }
     throw e;
   }
   return sync.session.access_token;
@@ -771,7 +775,7 @@ function render() {
     <nav class="tabbar"><div class="tabbar-in" style="--n:${tabs.length}">
       <i class="tab-pill" style="--i:${from}" aria-hidden="true"></i>
       ${tabs.map(([id, label]) => `<button class="tab ${ui.tab === id ? 'on' : ''}" data-act="tab" data-id="${id}" ${ui.tab === id ? 'aria-current="page"' : ''}>
-        ${ICONS[id]}${id === 'bills' && overdue ? `<i class="badge" aria-label="${overdue} unpaid">${overdue}</i>` : ''}<span>${label}</span></button>`).join('')}
+        ${ICONS[id]}${id === 'home' && overdue ? `<i class="badge" aria-label="${overdue} unpaid">${overdue}</i>` : ''}<span>${label}</span></button>`).join('')}
     </div></nav>`;
   if (from !== index) {
     requestAnimationFrame(() => requestAnimationFrame(() => { const pill = $('.tab-pill'); if (pill) pill.style.setProperty('--i', index); }));
@@ -844,7 +848,7 @@ const LOGO_SVG = `<svg class="brand-logo" role="img" aria-label="FETA" viewBox="
 const WELCOME_POINTS = [
   ['💰', 'Income and expenses', 'Record what comes in and what goes out, with a category and a note for each.'],
   ['📅', 'Bills and EMIs', 'Rent, school fees, subscriptions and instalments show up every month until you mark them paid.'],
-  ['🏦', 'Savings', 'Set money aside into funds, such as a children’s fund or an emergency fund.'],
+  ['🏦', 'Savings', 'Set money aside for what matters, such as your children or an emergency, and set a target for each.'],
   ['🔮', 'Upcoming months', 'See the fixed expenses waiting in each coming month, with a total.'],
   ['🎯', 'Plans', 'List what you want to buy later and how much to save for it each month.'],
   ['🤝', 'Money owed', 'Keep track of money people owe you and money you owe.'],
@@ -957,17 +961,19 @@ function viewHome() {
   const recv = debtTotal('receivable');
   const pay = debtTotal('payable');
 
-  let dueCard = '';
-  if (open.length) {
-    const bits = [];
-    if (openOut) bits.push(`${fmt(openOut)} still to pay`);
-    if (openIn) bits.push(`${fmt(openIn)} income expected`);
-    dueCard = `<button class="card tap" data-act="open-bills">
-      <div class="row-top"><span class="name">${openOut ? `${plural(open.filter((it) => it.type !== 'income').length, 'bill')} unpaid this month` : `${plural(open.length, 'item')} expected this month`}</span><span class="chev-r">›</span></div>
-      <div class="sub">${bits.join(' · ')}</div>
-      ${isNow && openOut ? `<div class="sub">After paying them: <b class="${after < 0 ? 'over' : ''}">${fmt(after)}</b>${after > 0 ? ` · about ${fmt(Math.floor(after / daysLeft))} a day for ${plural(daysLeft, 'day')}` : ''}</div>` : ''}
-    </button>`;
-  }
+  // This month's bills and repeating items: each one is Unpaid until it is marked paid here.
+  const due = dueItems(ym);
+  const out = due.filter((it) => it.type !== 'income');
+  const inc = due.filter((it) => it.type === 'income');
+  const paidCount = out.filter((it) => it.paid).length;
+  // Paid items leave this list: their payment is in the transactions below. Only what still needs attention stays on top.
+  const outLeft = out.filter((it) => !it.paid);
+  const incLeft = inc.filter((it) => !it.paid);
+  const toPay = `${outLeft.length ? `<div class="sec-head"><h2>To pay</h2><span class="sub">${paidCount} of ${out.length} paid · ${fmt(openOut)} unpaid</span></div>
+    <div class="list">${outLeft.map(dueRow).join('')}</div>` : out.length ? `<p class="note all-paid">✓ All ${plural(out.length, 'bill')} paid for this month</p>` : ''}
+    ${outLeft.length ? `
+    ${isNow && openOut ? `<p class="note" style="margin-top:8px">After paying them: <strong class="${after < 0 ? 'over' : ''}">${fmt(after)}</strong>${after > 0 ? ` · about ${fmt(Math.floor(after / daysLeft))} a day for ${plural(daysLeft, 'day')}` : ''}</p>` : ''}` : ''}
+    ${incLeft.length ? `<div class="sec-head"><h2>Expected income</h2>${openIn ? `<span class="sub">${fmt(openIn)} expected</span>` : ''}</div><div class="list">${incLeft.map(dueRow).join('')}</div>` : ''}`;
 
   return `<header class="top sticky-top">
       ${homeSwitch()}
@@ -987,7 +993,7 @@ function viewHome() {
         <div class="kpi"><div class="label">Savings</div><div class="v">${fmt(t.saving)}</div></div>
       </div>
     </section>
-    ${dueCard}
+    ${toPay}
     ${recv || pay ? `<button class="card tap" data-act="open-owed">
       <div class="kpis" style="margin:0;padding:0;border:0">
         <div class="kpi"><div class="label">Owed to me</div><div class="v">${fmt(recv)}</div></div>
@@ -1033,40 +1039,28 @@ function recurLine(r) {
 }
 
 function billsHead() {
-  return segButtons('bills', [['month', 'This month'], ['emi', 'EMI'], ['upcoming', 'Upcoming']], ui.bills);
+  return segButtons('bills', [['month', 'Bills'], ['emi', 'EMI'], ['upcoming', 'Upcoming']], ui.bills);
 }
 
 function viewBills() {
   return ui.bills === 'emi' ? viewEmi() : ui.bills === 'upcoming' ? viewUpcoming() : viewBillsMonth();
 }
 
+// The Bills tab is where repeating items are set up. Paying them happens on Home, under "To pay".
 function viewBillsMonth() {
-  const ym = ui.month;
-  const items = dueItems(ym);
-  const out = items.filter((it) => it.type !== 'income');
-  const inc = items.filter((it) => it.type === 'income');
-  const paidCount = out.filter((it) => it.paid).length;
-  const openOut = sum(out.filter(isOpen), (it) => it.amount);
   const yearly = state.recurring.filter((r) => r.frequency === 'yearly' && !r.paused && r.type !== 'income');
   const setAside = sum(yearly, (r) => recAmount(r, curYM()) / 12);
 
   return `<header class="top"><h1>Bills</h1></header>
-    <div class="sticky-top">
-      ${billsHead()}
-      ${monthNav(ym, 'month')}
-      ${ym === curYM() ? '' : '<button class="link center" data-act="month-now">Back to this month</button>'}
-    </div>
-    <div class="sec-head"><h2>To pay</h2><span class="sub">${out.length ? `${paidCount} of ${out.length} paid · ${fmt(openOut)} unpaid` : ''}</span></div>
-    <div class="list">${out.length ? out.map(dueRow).join('') : '<div class="empty">No bills in this month yet. Add your rent, school fee, utility bills and subscriptions once, and they come back here every month as Unpaid until you pay them.</div>'}</div>
-    <button class="btn ghost" style="margin-top:12px" data-act="add-rec">+ Add a monthly bill</button>
-    ${inc.length ? `<div class="sec-head"><h2>Expected income</h2></div><div class="list">${inc.map(dueRow).join('')}</div>` : ''}
-
-    <div class="sec-head"><h2>All your bills and repeating items</h2><button class="link" data-act="add-rec">+ Add</button></div>
+    <div class="sticky-top">${billsHead()}</div>
+    <div class="sec-head" style="margin-top:0"><h2>All your bills and repeating items</h2><button class="link" data-act="add-rec">+ Add</button></div>
     <div class="list">${state.recurring.length ? state.recurring.map((r) => `<button class="row" data-act="edit-rec" data-id="${r.id}">
         <span class="emoji" aria-hidden="true">${esc((cat(r.categoryId) || {}).emoji || '•')}</span>
         <span class="row-main"><span class="row-top"><span class="name">${esc(r.name)}</span><span class="pill">${TYPE_LABEL[r.type]}</span></span>
         <span class="row-sub">${recurLine(r)}</span></span></button>`).join('')
-      : '<div class="empty">Nothing repeating yet.</div>'}</div>
+      : '<div class="empty">Nothing repeating yet. Add your rent, school fee, utility bills and subscriptions once. Each month they show on Home under “To pay” until you pay them.</div>'}</div>
+    <button class="btn ghost" style="margin-top:12px" data-act="add-rec">+ Add a monthly bill</button>
+    <p class="note" style="margin-top:10px">Set up what repeats here. You mark each month’s payment on Home, under “To pay”.</p>
     ${setAside ? `<p class="note" style="margin-top:10px">Your yearly items add up to ${fmt(sum(yearly, (r) => recAmount(r, curYM())))}. Setting aside about ${fmt(Math.ceil(setAside))} a month covers them.</p>` : ''}`;
 }
 
@@ -1163,17 +1157,15 @@ function viewSavings() {
         <div class="kpi"><div class="label">Monthly average</div><div class="v">${fmt(monthsUsed ? Math.round(yearTotal / monthsUsed) : 0)}</div></div>
       </div>
     </section>
-    <button class="btn" data-act="add-saving" style="margin-bottom:16px">+ Add savings</button>
 
-    <section class="card">
-      <div class="sec-head" style="margin-top:0"><h2>By fund</h2><button class="link" data-act="add-cat" data-type="saving">+ New fund</button></div>
-      ${funds.length ? `<div class="rank">${funds.map(({ id, c, v }) => `<button class="rank-row" data-act="fund" data-id="${id}">
+    ${funds.length ? `<section class="card">
+      <div class="sec-head" style="margin-top:0"><h2>By category</h2></div>
+      <div class="rank">${funds.map(({ id, c, v }) => `<button class="rank-row" data-act="fund" data-id="${id}">
         <span class="row-top"><span class="name">${esc(catLabel(c))}</span><span class="amt">${fmt(v)}${total > 0 ? `<span class="share">${Math.round((v / total) * 100)}%</span>` : ''}</span></span>
         ${c && c.target > 0 ? `<span class="rank-track"><span class="rank-bar" style="width:${Math.min(100, (v / c.target) * 100)}%"></span></span>
         <span class="row-sub">${targetLine(v, c.target)}</span>`
-          : `<span class="rank-bar" style="width:${top > 0 ? (v / top) * 100 : 0}%"></span>`}</button>`).join('')}</div>`
-        : '<div class="empty">Nothing saved yet. Tap “Add savings” to record money you set aside, such as a children’s fund or an emergency fund.</div>'}
-    </section>
+          : `<span class="rank-bar" style="width:${top > 0 ? (v / top) * 100 : 0}%"></span>`}</button>`).join('')}</div>
+    </section>` : ''}
 
     <div class="month-nav" style="margin-bottom:14px">
       <button class="nav-btn" data-act="save-year" data-d="-1" aria-label="Previous year">‹</button>
@@ -1380,7 +1372,7 @@ function viewMore() {
     ${catList('Primary income sources', inc.filter((c) => c.group === 'primary'), 'income', 'primary')}
     ${catList('Secondary income sources', inc.filter((c) => c.group === 'secondary'), 'income', 'secondary')}
     ${catList('Expense categories', catsOf('expense'), 'expense')}
-    ${catList('Savings funds', catsOf('saving'), 'saving')}
+    ${catList('Savings categories', catsOf('saving'), 'saving')}
 
     <div class="sec-head"><h2>Settings</h2></div>
     <section class="card">
@@ -1433,6 +1425,10 @@ function typeRadios(current, types = TYPES) {
     ${types.map((v) => `<label><input type="radio" name="type" value="${v}" ${v === current ? 'checked' : ''}><span>${TYPE_LABEL[v]}</span></label>`).join('')}</div>`;
 }
 
+const NEW_CAT = '__new';
+const NEW_CAT_OPTION = `<option value="${NEW_CAT}">＋ New category…</option>`;
+const CAT_ICONS = ['🏦', '🧸', '🛟', '🎓', '🏠', '🚗', '✈️', '💍', '🕋', '🩺', '🎁', '📱', '💻', '🛒', '💡', '🍽️', '🚌', '👕', '💊', '🐾', '🎨', '🏋️', '💼', '📦'];
+
 function txSheet(tx, preset = {}) {
   const v = tx || preset;
   const type = v.type || 'expense';
@@ -1450,8 +1446,13 @@ function txSheet(tx, preset = {}) {
       <label class="field"><span data-note-label>${NOTE_LABEL[type]}</span>
         <input type="text" name="note" maxlength="120" autocomplete="off" placeholder="${NOTE_HINT[type]}" value="${esc(v.note || '')}"></label>
       <div class="two">
-        <label class="field"><span>Category</span><select name="categoryId">${catOptions(type, v.categoryId)}</select></label>
+        <label class="field"><span>Category</span><select name="categoryId">${catOptions(type, v.categoryId)}${NEW_CAT_OPTION}</select></label>
         <label class="field"><span>Date</span><input type="date" name="date" value="${date}"></label>
+      </div>
+      <div class="newcat hidden" data-newcat>
+        <label class="field"><span>New category name</span><input type="text" name="newCatName" maxlength="40" autocomplete="off"></label>
+        <div class="field"><span>Icon</span><div class="emoji-pick" role="radiogroup" aria-label="Icon">${CAT_ICONS.map((e) =>
+          `<label><input type="radio" name="newCatEmoji" value="${e}"><span>${e}</span></label>`).join('')}</div></div>
       </div>
       <button class="btn">${tx ? 'Save changes' : preset.cta || 'Add'}</button>
       ${!tx && preset.canSkip ? `<button type="button" class="btn ghost" data-act="skip-due" data-id="${v.recurringId}" data-period="${v.period}">Skip this month</button>` : ''}
@@ -1463,7 +1464,7 @@ function txSheet(tx, preset = {}) {
 
 function catSheet(c, type, group) {
   const kind = c ? c.type : type;
-  const title = { expense: 'expense category', income: 'income source', saving: 'savings fund' }[kind];
+  const title = { expense: 'expense category', income: 'income source', saving: 'savings category' }[kind];
   openSheet(c ? `Edit ${title}` : `New ${title}`, `
     <form data-form="cat" novalidate>
       <input type="hidden" name="id" value="${c ? c.id : ''}"><input type="hidden" name="type" value="${kind}">
@@ -1476,7 +1477,7 @@ function catSheet(c, type, group) {
         <option value="secondary" ${(c ? c.group : group) === 'secondary' ? 'selected' : ''}>Secondary (side hustle, bonus, gifts)</option></select></label>` : ''}
       ${kind === 'expense' ? `<label class="field"><span>Monthly limit (optional)</span>
         <input type="text" inputmode="decimal" name="budget" placeholder="No limit" autocomplete="off" value="${c && c.budget ? c.budget : ''}"></label>` : ''}
-      ${kind === 'saving' && !c ? `<label class="field"><span>Amount already in this fund (optional)</span>
+      ${kind === 'saving' && !c ? `<label class="field"><span>Amount already saved (optional)</span>
         <input type="text" inputmode="decimal" name="opening" placeholder="0" autocomplete="off"></label>
         <p class="note" style="margin:-4px 0 14px">Money you had saved before you started using the app. It counts in your total, not in any month.</p>` : ''}
       ${kind === 'saving' ? `<label class="field"><span>Target amount (optional)</span>
@@ -1542,7 +1543,7 @@ function recSheet(r) {
       <label class="field ${freq === 'yearly' ? '' : 'hidden'}" data-month-wrap><span>Month</span><select name="month">
         ${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}" ${(r ? r.month : Number(ui.month.slice(5, 7))) === i + 1 ? 'selected' : ''}>${monthNameOf(i + 1)}</option>`).join('')}</select></label>
       ${monthPicker('Starts from', 'start', r ? r.start : ui.month)}
-      <p class="note">It appears in Bills on its date each time. You confirm the amount when you pay, so a fee that changes is no problem.</p>
+      <p class="note">It appears on Home under “To pay” each time it is due. You confirm the amount when you pay, so a fee that changes is no problem.</p>
       ${r ? `<label class="check"><input type="checkbox" name="paused" ${r.paused ? 'checked' : ''}><span>Paused</span></label>` : ''}
       <button class="btn">${r ? 'Save changes' : 'Add'}</button>
       ${r ? `<button type="button" class="btn danger" data-act="del-rec" data-id="${r.id}">Delete</button>` : ''}
@@ -1623,8 +1624,8 @@ function syncEmiForm(form) {
   const monthly = parseAmount(form.elements.monthly.value);
   const start = pickedMonth({ startM: form.elements.startM.value, startY: form.elements.startY.value }, 'start');
   $('[data-emi-summary]', form).textContent = tenure && monthly > 0 && isYM(start)
-    ? `${tenure} instalments of ${fmt(monthly)} = ${fmt(monthly * tenure)} in total. It appears in Bills every month from ${ymLabel(start)} and stops after the last instalment in ${ymLabel(addMonths(start, tenure - 1))}.`
-    : 'It repeats in Bills every month until the last instalment.';
+    ? `${tenure} instalments of ${fmt(monthly)} = ${fmt(monthly * tenure)} in total. It appears on Home under “To pay” every month from ${ymLabel(start)} and stops after the last instalment in ${ymLabel(addMonths(start, tenure - 1))}.`
+    : 'It repeats on Home under “To pay” every month until the last instalment.';
 }
 
 function emiDetailSheet(e) {
@@ -1722,7 +1723,16 @@ function submitTx(f) {
   if (!(amount > 0)) return toast('Enter an amount above zero.');
   if (!TYPES.includes(f.type)) return;
   if (!isDate(f.date)) return toast('Pick a date.');
-  const c = cat(f.categoryId);
+  let c = cat(f.categoryId);
+  if (f.categoryId === NEW_CAT) {
+    const name = String(f.newCatName || '').trim().slice(0, 40);
+    if (!name) return toast('Give the new category a name.');
+    c = catsOf(f.type).find((x) => x.name.toLowerCase() === name.toLowerCase());
+    if (!c) {
+      c = { id: uid(), type: f.type, group: 'primary', name, emoji: f.newCatEmoji || '', budget: 0, opening: 0, target: 0 };
+      state.categories.push(c);
+    }
+  }
   const data = { type: f.type, amount, categoryId: c && c.type === f.type ? c.id : '', date: f.date, note: f.note.trim(),
     recurringId: f.recurringId || '', emiId: f.emiId || '', planId: f.planId || '', period: f.period || '' };
   const existing = f.id && state.transactions.find((t) => t.id === f.id);
@@ -1973,7 +1983,6 @@ const actions = {
   'home-year': (el) => { ui.month = `${Number(ui.month.slice(0, 4)) + Number(el.dataset.d)}${ui.month.slice(4)}`; render(); },
   'home-month': (el) => { if (isYM(el.dataset.id)) { ui.month = el.dataset.id; ui.home = 'month'; render(); window.scrollTo(0, 0); } },
   'year-report': () => { ui.tab = 'reports'; ui.rep.period = 'year'; ui.rep.cursor = `${ui.month.slice(0, 4)}-01-01`; ui.bar = null; render(); window.scrollTo(0, 0); },
-  'open-bills': () => { ui.tab = 'bills'; ui.bills = 'month'; render(); window.scrollTo(0, 0); },
   'filter': (el) => { ui.filter = el.dataset.id; render(); },
   'open-owed': () => { ui.tab = 'planner'; ui.planner = debtTotal('receivable') ? 'receivable' : 'payable'; render(); window.scrollTo(0, 0); },
 
@@ -1988,14 +1997,14 @@ const actions = {
     const saved = r3(sum(rows, (t) => t.amount) + had);
     openSheet(catLabel(c), `<p>${fmt(saved)} saved in total${c && c.target > 0 ? `<br>${targetLine(saved, c.target)}` : ''}</p>
       <div class="list">${c ? `${had ? `<div class="row"><span class="row-main">
-        <span class="row-top"><span class="name">Already in this fund</span><span class="amt">${fmt(had)}</span></span>
+        <span class="row-top"><span class="name">Already saved</span><span class="amt">${fmt(had)}</span></span>
         <span class="row-sub">Saved before you started using the app.</span></span></div>` : ''}
         <button class="row" data-act="edit-cat" data-id="${id}"><span class="row-main">
         <span class="row-top"><span class="name">Target</span><span class="amt">${c.target > 0 ? fmt(c.target) : 'Not set'}</span></span>
-        <span class="row-sub">${c.target > 0 ? 'The amount you want this fund to reach. Tap to change.' : 'Tap to set an amount you want this fund to reach.'}</span></span></button>` : ''}${sortedTx(rows).map((t) => `<button class="row" data-act="edit-tx" data-id="${t.id}"><span class="row-main">
+        <span class="row-sub">${c.target > 0 ? 'The amount you want to reach. Tap to change.' : 'Tap to set an amount you want to reach.'}</span></span></button>` : ''}${sortedTx(rows).map((t) => `<button class="row" data-act="edit-tx" data-id="${t.id}"><span class="row-main">
         <span class="row-top"><span class="name">${fmtDay(t.date)}, ${t.date.slice(0, 4)}</span><span class="amt">${fmt(t.amount)}</span></span>
         ${t.note ? `<span class="row-sub">${esc(t.note)}</span>` : ''}</span></button>`).join('')}</div>
-      <button class="btn" data-act="add-saving-to" data-id="${id}">Add savings to this fund</button>`);
+      <button class="btn" data-act="add-saving-to" data-id="${id}">Add savings to this</button>`);
   },
   'add-saving-to': (el) => txSheet(null, { type: 'saving', lockType: true, categoryId: el.dataset.id }),
   'edit-tx': (el) => { const t = find(state.transactions, el); if (t) txSheet(t); },
@@ -2009,7 +2018,7 @@ const actions = {
   },
   'bills': (el) => { ui.bills = el.dataset.id; render(); window.scrollTo(0, 0); },
   'horizon': (el) => { ui.horizon = Number(el.dataset.id) || 12; render(); },
-  'goto-month': (el) => { if (isYM(el.dataset.id)) { ui.month = el.dataset.id; ui.bills = 'month'; render(); window.scrollTo(0, 0); } },
+  'goto-month': (el) => { if (isYM(el.dataset.id)) { ui.month = el.dataset.id; ui.tab = 'home'; ui.home = 'month'; render(); window.scrollTo(0, 0); } },
   'skip-due': (el) => {
     const r = find(state.recurring, el);
     if (r && isYM(el.dataset.period) && !r.skips.includes(el.dataset.period)) r.skips.push(el.dataset.period);
@@ -2028,7 +2037,7 @@ const actions = {
       month: Number(t.date.slice(5, 7)), start: t.date.slice(0, 7), end: '', paused: false, skips: [], note: '' };
     state.recurring.push(r);
     Object.assign(t, { recurringId: r.id, period: t.date.slice(0, 7), note: name });
-    ui.tab = 'bills'; ui.bills = 'month'; ui.month = t.date.slice(0, 7);
+    ui.tab = 'home'; ui.home = 'month'; ui.month = t.date.slice(0, 7);
     done(); window.scrollTo(0, 0);
     toast('Now a monthly bill. It is marked paid for this month.');
   },
@@ -2040,12 +2049,12 @@ const actions = {
     r.changes = (r.changes || []).filter((c) => c.from !== el.dataset.from);
     save(); render(); recSheet(r);
   },
-  'del-rec': (el) => confirmSheet('Delete this repeating item?', 'It stops appearing in Bills. Payments you already recorded stay in your history.', 'Delete', () => { remove('recurring', el.dataset.id); save(); render(); }),
+  'del-rec': (el) => confirmSheet('Delete this repeating item?', 'It stops appearing under “To pay”. Payments you already recorded stay in your history.', 'Delete', () => { remove('recurring', el.dataset.id); save(); render(); }),
 
   'add-emi': () => emiSheet(null),
   'open-emi': (el) => { const e = find(state.emis, el); if (e) emiDetailSheet(e); },
   'edit-emi': (el) => { const e = find(state.emis, el); if (e) emiSheet(e); },
-  'del-emi': (el) => confirmSheet('Delete this EMI?', 'It stops repeating in Bills. Instalments you already recorded stay in your history as expenses.', 'Delete', () => { remove('emis', el.dataset.id); save(); render(); }),
+  'del-emi': (el) => confirmSheet('Delete this EMI?', 'It stops repeating under “To pay”. Instalments you already recorded stay in your history as expenses.', 'Delete', () => { remove('emis', el.dataset.id); save(); render(); }),
 
   'planner': (el) => { ui.planner = el.dataset.id; render(); },
   'add-plan': () => planSheet(null),
@@ -2128,8 +2137,14 @@ document.addEventListener('submit', (e) => {
 document.addEventListener('change', (e) => {
   const el = e.target;
   const form = el.closest('[data-form]');
-  if (form && el.name === 'type' && el.type === 'radio') {
-    form.elements.categoryId.innerHTML = catOptions(el.value);
+  if (form && form.dataset.form === 'tx' && el.name === 'categoryId') {
+    const box = $('[data-newcat]', form);
+    box.classList.toggle('hidden', el.value !== NEW_CAT);
+    if (el.value === NEW_CAT) form.elements.newCatName.focus();
+  } else if (form && el.name === 'type' && el.type === 'radio') {
+    form.elements.categoryId.innerHTML = catOptions(el.value) + (form.dataset.form === 'tx' ? NEW_CAT_OPTION : '');
+    const box = $('[data-newcat]', form);
+    if (box) box.classList.add('hidden');
     const label = $('[data-note-label]', form);
     if (label) { label.textContent = NOTE_LABEL[el.value]; form.elements.note.placeholder = NOTE_HINT[el.value]; }
   } else if (form && form.dataset.form === 'rec' && el.name === 'frequency') {
@@ -2171,12 +2186,14 @@ window.fetaBack = () => {
 
 /* ---------- Start ---------- */
 
-// A device that is signed out but still holds an account's data (an older version left it there, or the sign-in expired)
-// shows the welcome screen instead. The data is set aside and offered back after signing in.
+// The app is used with an account. A device that is not signed in but is past the welcome screen (it was used without an
+// account, an older version left data behind, or the sign-in expired) goes back to the welcome screen.
+// Whatever it holds is set aside and offered back after signing in. FetaAllowLocal is only set by the local test page.
 (() => {
+  if (sync.session || window.FetaAllowLocal) return;
   let wasSignedIn = false;
   try { wasSignedIn = localStorage.getItem(SYNC_KEY) != null; } catch (e) { /* ignore */ }
-  if (!wasSignedIn || sync.session) return;
+  if (!wasSignedIn && !state.settings.started) return;
   setAside();
   resetState();
   try { localStorage.removeItem(SYNC_KEY); } catch (e) { /* ignore */ }

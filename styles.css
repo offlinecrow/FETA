@@ -454,3 +454,13 @@ div.row:active { background: none; }
 @keyframes pop { from { transform: translateY(-50%) scale(.96); opacity: 0; } to { transform: translateY(-50%); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .sheet.center { animation: none; } }
 .welcome .tagline { margin-bottom: 24px; }
+.list + .card, .note + .card { margin-top: 16px; }
+
+/* Icon chooser for a new category. */
+.emoji-pick { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+.emoji-pick label { position: relative; }
+.emoji-pick input { position: absolute; opacity: 0; inset: 0; }
+.emoji-pick span { display: block; text-align: center; font-size: 22px; line-height: 40px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); }
+.emoji-pick input:checked + span { border-color: var(--accent); background: var(--track); }
+.emoji-pick input:focus-visible + span { outline: 2px solid var(--accent); }
+.all-paid { margin: 0 2px 16px; color: var(--good); font-weight: 600; }
