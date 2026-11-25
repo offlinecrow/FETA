@@ -395,9 +395,17 @@ div.row:active { background: none; }
 /* The switch and the month changer at the top stay in place while the page scrolls under them, blurred. */
 .sticky-top {
   position: sticky; top: env(safe-area-inset-top); z-index: 5;
-  margin: -8px -16px 6px; padding: 8px 16px 10px;
+  margin: -8px -16px -12px; padding: 8px 16px 28px;
+  pointer-events: none;
+}
+.sticky-top > * { pointer-events: auto; }
+/* The blur sits on a layer behind the controls and fades out towards the bottom, so it has no hard edge. */
+.sticky-top::before {
+  content: ""; position: absolute; inset: 0; z-index: -1;
   background: color-mix(in srgb, var(--bg) 68%, transparent);
   -webkit-backdrop-filter: blur(18px) saturate(180%); backdrop-filter: blur(18px) saturate(180%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 40px), rgba(0, 0, 0, .55) calc(100% - 22px), rgba(0, 0, 0, .18) calc(100% - 9px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 40px), rgba(0, 0, 0, .55) calc(100% - 22px), rgba(0, 0, 0, .18) calc(100% - 9px), transparent);
 }
 .sticky-top > :last-child, .top.sticky-top .seg:last-child { margin-bottom: 0; }
 /* The same blur behind the phone's status bar, so nothing shows through above the sticky bar. */

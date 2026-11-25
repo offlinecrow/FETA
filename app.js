@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '26';
+const APP_VERSION = '28';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -1445,10 +1445,19 @@ function recSheet(r) {
         <label class="field"><span>${changes.length ? 'Starting amount' : 'Amount'}</span><input type="text" inputmode="decimal" name="amount" placeholder="0" autocomplete="off" value="${r ? r.amount : ''}"></label>
         <label class="field"><span>Category</span><select name="categoryId">${catOptions(type, r && r.categoryId)}</select></label>
       </div>
-      ${changes.length ? `<div class="list" style="margin-bottom:12px">${changes.map((c) => `<div class="row"><span class="row-main">
-        <span class="row-top"><span class="name">${fmt(c.amount)} from ${ymLabel(c.from)}</span>
-        <button type="button" class="link" data-act="del-rec-change" data-id="${r.id}" data-from="${c.from}">Remove</button></span></span></div>`).join('')}</div>` : ''}
-      ${r ? `<button type="button" class="btn ghost" style="margin-bottom:14px" data-act="rec-change" data-id="${r.id}">Change the amount from a month</button>` : ''}
+      ${changes.length ? `<div class="field"><span>Amount history</span><div class="list">
+        <div class="row"><span class="row-main"><span class="row-top"><span class="name">Started at ${fmt(r.amount)}</span></span>
+          <span class="row-sub">From ${ymLabel(r.start)}</span></span></div>
+        ${changes.map((c, i) => {
+          const diff = r3(c.amount - (i ? changes[i - 1].amount : r.amount));
+          return `<div class="row"><span class="row-main">
+          <span class="row-top"><span class="name">${diff >= 0 ? '▲ Increased' : '▼ Decreased'} by ${fmt(Math.abs(diff))} to ${fmt(c.amount)}</span>
+          <button type="button" class="link" data-act="del-rec-change" data-id="${r.id}" data-from="${c.from}">Remove</button></span>
+          <span class="row-sub">From ${ymLabel(c.from)}</span></span></div>`;
+        }).join('')}</div></div>` : ''}
+      ${r ? `<div class="two" style="margin-bottom:14px">
+        <button type="button" class="btn ghost" data-act="rec-change" data-id="${r.id}" data-dir="up">▲ Increase</button>
+        <button type="button" class="btn ghost" data-act="rec-change" data-id="${r.id}" data-dir="down">▼ Decrease</button></div>` : ''}
       <div class="two">
         <label class="field"><span>Repeats</span><select name="frequency">
           <option value="monthly" ${freq === 'monthly' ? 'selected' : ''}>Every month</option>
@@ -1466,18 +1475,37 @@ function recSheet(r) {
 }
 
 // A rent or fee that goes up: the new amount applies from the chosen month, and earlier months keep the old one.
-function recChangeSheet(r) {
+function recChangeSheet(r, dir) {
+  const up = dir !== 'down';
   const from = firstUnpaidMonth(r);
-  openSheet(`Change amount: ${r.name}`, `
+  openSheet(`${up ? 'Increase' : 'Decrease'} amount: ${r.name}`, `
     <form data-form="recchange" novalidate>
-      <input type="hidden" name="id" value="${r.id}">
-      <p>Now ${fmt(recAmount(r, from))} ${r.frequency === 'yearly' ? 'a year' : 'a month'}.</p>
-      <label class="field"><span>New amount</span><input type="text" inputmode="decimal" name="amount" placeholder="0" autocomplete="off" data-autofocus></label>
+      <input type="hidden" name="id" value="${r.id}"><input type="hidden" name="dir" value="${up ? 'up' : 'down'}">
+      <label class="field"><span>${up ? 'Increase by' : 'Decrease by'}</span><input type="text" inputmode="decimal" name="amount" placeholder="0" autocomplete="off" data-autofocus></label>
       ${monthPicker('From which month', 'from', from)}
-      <p class="note">The new amount applies from that month onward. Payments you have already made stay as they are, and months before it keep the old amount.</p>
-      <button class="btn">Save new amount</button>
+      <p data-change-preview>${recChangePreview(r, up, '', from)}</p>
+      <p class="note">It applies from that month onward, so this month changes only if it is not paid yet. Payments you have already made stay as they are.</p>
+      <button class="btn">${up ? 'Increase the amount' : 'Decrease the amount'}</button>
       <button type="button" class="btn ghost" data-act="edit-rec" data-id="${r.id}">Back</button>
     </form>`);
+}
+
+// The line under the form that says what the amount is now and what it becomes.
+function recChangePreview(r, up, typed, from) {
+  const month = isYM(from) ? from : firstUnpaidMonth(r);
+  const base = recAmount(r, month);
+  const delta = parseAmount(typed);
+  const per = r.frequency === 'yearly' ? 'a year' : 'a month';
+  if (!(delta > 0)) return `Now ${fmt(base)} ${per}.`;
+  const next = r3(up ? base + delta : base - delta);
+  if (!(next > 0)) return `Now ${fmt(base)} ${per}. The decrease must be smaller than that.`;
+  return `Now ${fmt(base)} ${per}. It becomes <strong>${fmt(next)}</strong> from ${ymLabel(month)}.`;
+}
+function syncRecChangeForm(form) {
+  const r = state.recurring.find((x) => x.id === form.elements.id.value);
+  if (!r) return;
+  const from = pickedMonth({ fromM: form.elements.fromM.value, fromY: form.elements.fromY.value }, 'from');
+  $('[data-change-preview]', form).innerHTML = recChangePreview(r, form.elements.dir.value !== 'down', form.elements.amount.value, from);
 }
 
 function emiSheet(e) {
@@ -1667,13 +1695,16 @@ function submitRec(f) {
 function submitRecChange(f) {
   const r = state.recurring.find((x) => x.id === f.id);
   if (!r) return closeSheet();
-  const amount = parseAmount(f.amount);
-  if (!(amount > 0)) return toast('Enter an amount above zero.');
+  const up = f.dir !== 'down';
+  const delta = parseAmount(f.amount);
+  if (!(delta > 0)) return toast(`Enter how much to ${up ? 'increase' : 'decrease'} it by.`);
   const from = pickedMonth(f, 'from');
   if (!isYM(from)) return toast('Pick the month the new amount starts from.');
+  const amount = r3(up ? recAmount(r, from) + delta : recAmount(r, from) - delta);
+  if (!(amount > 0)) return toast('The decrease must be smaller than the amount itself.');
   r.changes = (r.changes || []).filter((c) => c.from !== from).concat({ from, amount }).sort((a, b) => (a.from < b.from ? -1 : 1));
   done();
-  toast(`${fmt(amount)} from ${ymLabel(from)}`);
+  toast(`${up ? 'Increased' : 'Decreased'} to ${fmt(amount)} from ${ymLabel(from)}`);
 }
 
 function submitEmi(f, form) {
@@ -1916,7 +1947,7 @@ const actions = {
     toast('Now a monthly bill. It is marked paid for this month.');
   },
   'edit-rec': (el) => { const r = find(state.recurring, el); if (r) recSheet(r); },
-  'rec-change': (el) => { const r = find(state.recurring, el); if (r) recChangeSheet(r); },
+  'rec-change': (el) => { const r = find(state.recurring, el); if (r) recChangeSheet(r, el.dataset.dir); },
   'del-rec-change': (el) => {
     const r = find(state.recurring, el);
     if (!r) return;
@@ -2019,6 +2050,8 @@ document.addEventListener('change', (e) => {
     syncRecForm(form);
   } else if (form && form.dataset.form === 'emi') {
     syncEmiForm(form);
+  } else if (form && form.dataset.form === 'recchange') {
+    syncRecChangeForm(form);
   } else if (el.dataset.setting) {
     state.settings[el.dataset.setting] = el.value;
     fmtCache = {};
@@ -2032,6 +2065,8 @@ document.addEventListener('change', (e) => {
 document.addEventListener('input', (e) => {
   const form = e.target.closest('[data-form="emi"]');
   if (form) return syncEmiForm(form);
+  const changeForm = e.target.closest('[data-form="recchange"]');
+  if (changeForm) return syncRecChangeForm(changeForm);
   if (e.target.id !== 'tx-search') return;
   ui.search = e.target.value;
   $('#tx-list').innerHTML = homeListHtml();
