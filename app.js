@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '34';
+const APP_VERSION = '35';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -854,8 +854,7 @@ function viewWelcome() {
       <label class="field"><span>Your currency</span><select data-setting="currency">${currencyOptions(state.settings.currency)}</select></label>
       <button class="btn" data-act="open-account" data-id="signup">Create an account</button>
       <button class="btn ghost" data-act="open-account" data-id="signin">I already have an account</button>
-      <button class="btn ghost" data-act="start">Use without an account</button>
-      <p class="note">With an account your data is backed up online and stays the same on every device you sign in on. Without one it stays only on this device. You can create an account later under More.</p>
+      <p class="note">Your data is backed up online in your account and stays the same on every device you sign in on.</p>
     </div>
     <div class="welcome-foot">
       <p class="note">Version ${APP_VERSION}</p>
@@ -1896,6 +1895,7 @@ const remove = (key, id) => { state[key] = state[key].filter((x) => x.id !== id)
 
 const actions = {
   'tab': (el) => { ui.tab = el.dataset.id; ui.bar = null; render(); window.scrollTo(0, 0); },
+  // Using the app without an account is switched off: the welcome screen no longer offers it. The action is kept for the tests.
   'start': () => { startApp(); save(); render(); },
   'welcome-points': () => welcomePointsSheet(),
   'android-update': () => { if (androidUpdate) location.href = androidUpdate.url; },
