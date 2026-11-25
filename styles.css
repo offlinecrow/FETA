@@ -453,3 +453,4 @@ div.row:active { background: none; }
 }
 @keyframes pop { from { transform: translateY(-50%) scale(.96); opacity: 0; } to { transform: translateY(-50%); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .sheet.center { animation: none; } }
+.welcome .tagline { margin-bottom: 24px; }

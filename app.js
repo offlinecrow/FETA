@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '33';
+const APP_VERSION = '34';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
