@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '68';
+const APP_VERSION = '69';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -329,13 +329,16 @@ function sanitize(s) {
     };
   });
   out.plans = arr(s.plans).map((p) => ({
-    id: p.id, name: str(p.name, 60) || 'Plan', price: pos(p.price), target: isYM(p.target) ? p.target : '',
+    id: p.id, name: str(p.name, 60) || 'Plan', price: pos(p.price),
+    // The day the plan is for. Older plans only had a month ("target"), which is kept in step with the day.
+    date: isDate(p.date) ? p.date : '', target: isDate(p.date) ? p.date.slice(0, 7) : isYM(p.target) ? p.target : '',
     priority: ['high', 'medium', 'low'].includes(p.priority) ? p.priority : 'medium', note: str(p.note, 120), done: !!p.done
   }));
   out.debts = arr(s.debts).map((d) => ({
     id: d.id, kind: d.kind === 'payable' ? 'payable' : 'receivable', person: str(d.person, 60) || 'Someone', amount: pos(d.amount),
     date: isDate(d.date) ? d.date : today(), due: isDate(d.due) ? d.due : '', note: str(d.note, 120), settled: !!d.settled,
-    payments: arr(d.payments).filter((p) => isDate(p.date)).map((p) => ({ id: p.id, amount: pos(p.amount), date: p.date }))
+    // txId: the income or expense that recording this payment added.
+    payments: arr(d.payments).filter((p) => isDate(p.date)).map((p) => ({ id: p.id, amount: pos(p.amount), date: p.date, ...(okId(p.txId) ? { txId: p.txId } : {}) }))
   }));
   return out;
 }
@@ -1139,6 +1142,25 @@ const debtPaid = (d) => sum(d.payments, (p) => p.amount);
 const debtLeft = (d) => (d.settled ? 0 : Math.max(0, r3(d.amount - debtPaid(d))));
 const debtTotal = (kind) => sum(state.debts.filter((d) => d.kind === kind), debtLeft);
 
+// The day a plan is for. A plan from before plans had a day counts from the first of its month.
+const planDate = (p) => p.date || (p.target ? `${p.target}-01` : '');
+// Planner items whose reminder has come: their day is tomorrow, today or already past, and they are still open.
+// They are counted on the Planner tab until they are paid, received, bought or given another date.
+function plannerDue() {
+  const until = addDays(today(), 1);
+  const debts = state.debts.filter((d) => !d.settled && isDate(d.due) && d.due <= until && debtLeft(d) > 0);
+  return {
+    plans: state.plans.filter((p) => !p.done && planDate(p) && planDate(p) <= until),
+    receivable: debts.filter((d) => d.kind === 'receivable'),
+    payable: debts.filter((d) => d.kind === 'payable')
+  };
+}
+// "Due tomorrow", "Due today" or "Overdue" for such an item, as a small label; nothing for a day further away.
+function duePill(date, open) {
+  if (!open || !date || date > addDays(today(), 1)) return '';
+  return date < today() ? '<span class="pill overdue">⚠ Overdue</span>' : `<span class="pill unpaid">${date === today() ? 'Due today' : 'Due tomorrow'}</span>`;
+}
+
 /* ---------- Reminders ---------- */
 
 // Everything FETA would remind about, worked out from the data: what happened already and what is coming in the next weeks.
@@ -1196,15 +1218,17 @@ function buildNotices() {
 
   if (want('plans')) {
     const open = state.plans.filter((p) => !p.done);
-    for (const p of open.filter((x) => isYM(x.target))) {
+    for (const p of open.filter((x) => planDate(x))) {
+      const day = planDate(p);
       const price = p.price > 0 ? `About ${fmt(p.price)}.` : 'Open the planner to see it.';
-      add('plans', `plan:${p.id}:${p.target}:before`, atHour(addMonths(p.target, -1) + '-01', 9), `${p.name} is planned for next month`, price, 'planner');
-      add('plans', `plan:${p.id}:${p.target}`, atHour(p.target + '-01', 9), `You planned to buy ${p.name} this month`, price, 'planner');
+      add('plans', `plan:${p.id}:${p.target}:before`, atHour(addMonths(p.target, -1) + '-01', 9), `${p.name} is planned for next month`, price, 'planner', 'plans');
+      add('plans', `plan:${p.id}:${day}:eve`, atHour(addDays(day, -1), 9), `${p.name} is planned for tomorrow`, price, 'planner', 'plans');
+      add('plans', `plan:${p.id}:${day}`, atHour(day, 9), `${p.name} is planned for today`, price, 'planner', 'plans');
     }
     const loose = open.filter((x) => !isYM(x.target));
     if (loose.length) {
       const names = loose.slice(0, 3).map((x) => x.name).join(', ') + (loose.length > 3 ? ` and ${loose.length - 3} more` : '');
-      for (const ym of [ymNow, addMonths(ymNow, 1)]) add('plans', `plans:${ym}`, atHour(ym + '-01', 10), 'Still on your plan list', names, 'planner');
+      for (const ym of [ymNow, addMonths(ymNow, 1)]) add('plans', `plans:${ym}`, atHour(ym + '-01', 10), 'Still on your plan list', names, 'planner', 'plans');
     }
   }
 
@@ -1223,7 +1247,8 @@ function buildNotices() {
     for (const d of state.debts) {
       const left = debtLeft(d);
       if (!isDate(d.due) || !(left > 0)) continue;
-      add('debts', `debt:${d.id}:${d.due}`, atHour(d.due, 9), d.kind === 'payable' ? `You owe ${d.person} ${fmt(left)}` : `${d.person} owes you ${fmt(left)}`, `Due ${fmtDay(d.due)}.`, 'planner');
+      add('debts', `debt:${d.id}:${d.due}:eve`, atHour(addDays(d.due, -1), 9), d.kind === 'payable' ? `Tomorrow you owe ${d.person} ${fmt(left)}` : `${d.person} owes you ${fmt(left)} tomorrow`, `Due ${fmtDay(d.due)}.`, 'planner', d.kind);
+      add('debts', `debt:${d.id}:${d.due}`, atHour(d.due, 9), d.kind === 'payable' ? `You owe ${d.person} ${fmt(left)}` : `${d.person} owes you ${fmt(left)}`, `Due ${fmtDay(d.due)}.`, 'planner', d.kind);
     }
   }
 
@@ -1334,6 +1359,8 @@ window.fetaGo = (tab, month, tx) => {
   // The only way here with Setup is the bell's "Choose what to be notified about".
   ui.setup = tab === 'more' ? 'notify' : null;
   if (tab === 'home') { ui.home = 'month'; if (isYM(month)) ui.month = month; }
+  // A planner reminder opens the list it is about.
+  if (tab === 'planner' && ['plans', 'receivable', 'payable'].includes(month)) ui.planner = month;
   if (tab === 'reports' && isYM(month)) { ui.rep.period = 'month'; ui.rep.cursor = month + '-01'; }
   // A weekly report is opened with the first day of its week.
   if (tab === 'reports' && isDate(month)) { ui.rep.period = 'week'; ui.rep.cursor = month; }
@@ -1458,6 +1485,8 @@ function render() {
   // Invitations waiting for an answer are marked on Setup, where the profile is.
   const invites = sync.session ? share.invites.length : 0;
   const notices = ui.page === 'notices';
+  const due = guest ? null : plannerDue();
+  const planned = due ? due.plans.length + due.receivable.length + due.payable.length : 0;
   const overdue = guest ? 0 : dueItems(curYM()).filter((it) => dueStatus(it) === 'unpaid').length;
   // Anything other than the person's own main profile is named at the top, so it is clear whose money this is.
   const shown = sync.profile && !sync.profile.main ? sync.profile : null;
@@ -1475,7 +1504,7 @@ function render() {
     <nav class="tabbar"><div class="tabbar-in" style="--n:${tabs.length}">
       <i class="tab-pill" style="--i:${from}" aria-hidden="true"></i>
       ${tabs.map(([id, label]) => `<button class="tab ${ui.tab === id ? 'on' : ''}" data-act="tab" data-id="${id}" ${ui.tab === id ? 'aria-current="page"' : ''}>
-        ${ICONS[id]}${id === 'home' && overdue ? `<i class="badge" aria-label="${overdue} unpaid">${overdue}</i>` : ''}${id === 'more' && invites ? `<i class="badge">${invites}</i>` : ''}<span>${label}</span></button>`).join('')}
+        ${ICONS[id]}${id === 'home' && overdue ? `<i class="badge" aria-label="${overdue} unpaid">${overdue}</i>` : ''}${id === 'more' && invites ? `<i class="badge">${invites}</i>` : ''}${id === 'planner' && planned ? `<i class="badge" aria-label="${planned} due">${planned}</i>` : ''}<span>${label}</span></button>`).join('')}
     </div></nav>`;
   if (from !== index) {
     requestAnimationFrame(() => requestAnimationFrame(() => { const pill = $('.tab-pill'); if (pill) pill.style.setProperty('--i', index); }));
@@ -2242,27 +2271,30 @@ function sendReport(mode) {
 /* ---------- Planner: plans, receivable, payable ---------- */
 
 function planRow(p) {
+  const day = planDate(p);
   const months = p.target ? monthsBetween(curYM(), p.target) : null;
-  let sub = p.done ? '✓ Done' : p.target ? `By ${ymShort(p.target)}` : 'No date set';
-  if (!p.done && months != null) sub += months > 0 ? ` · save ${fmt(Math.ceil(p.price / months))} a month` : months === 0 ? ' · due this month' : ' · date has passed';
-  return `<button class="row" data-act="edit-plan" data-id="${p.id}">
+  let sub = p.done ? '✓ Done' : day ? `By ${fmtShort(day)}${day.slice(0, 4) === today().slice(0, 4) ? '' : ` ${day.slice(0, 4)}`}` : 'No date set';
+  if (!p.done && months != null && months > 0) sub += ` · save ${fmt(Math.ceil(p.price / months))} a month`;
+  const pill = duePill(day, !p.done) || (p.done ? '' : `<span class="pill">${p.priority[0].toUpperCase() + p.priority.slice(1)}</span>`);
+  return `<button class="row ${!p.done && day && day < today() ? 'is-unpaid' : ''}" data-act="edit-plan" data-id="${p.id}">
     <span class="row-main"><span class="row-top"><span class="name">${esc(p.name)}</span><span class="amt">${fmt(p.price)}</span></span>
-    <span class="row-top"><span class="row-sub">${sub}${p.note ? ' · ' + esc(p.note) : ''}</span>${p.done ? '' : `<span class="pill">${p.priority[0].toUpperCase() + p.priority.slice(1)}</span>`}</span>
+    <span class="row-top"><span class="row-sub">${sub}${p.note ? ' · ' + esc(p.note) : ''}</span>${pill}</span>
     </span></button>`;
 }
 
 function debtRow(d) {
   const left = debtLeft(d);
-  const late = !d.settled && d.due && d.due < today();
   const sub = d.settled ? '✓ Settled' : `${fmt(left)} left${d.due ? ` · due ${fmtShort(d.due)}` : ''}`;
   return `<button class="row" data-act="open-debt" data-id="${d.id}">
     <span class="row-main"><span class="row-top"><span class="name">${esc(d.person)}</span><span class="amt">${fmt(d.settled ? d.amount : left)}${!d.settled && left !== d.amount ? `<span class="of"> / ${fmt(d.amount)}</span>` : ''}</span></span>
-    <span class="row-top"><span class="row-sub">${sub}${d.note ? ' · ' + esc(d.note) : ''}</span>${late ? '<span class="pill overdue">⚠ Overdue</span>' : ''}</span>
+    <span class="row-top"><span class="row-sub">${sub}${d.note ? ' · ' + esc(d.note) : ''}</span>${duePill(d.due, !d.settled && left > 0)}</span>
     </span></button>`;
 }
 
 function viewPlanner() {
   const tab = ui.planner;
+  // Each list shows how many of its items are due.
+  const due = plannerDue();
   let body;
   if (tab === 'plans') {
     const order = { high: 0, medium: 1, low: 2 };
@@ -2285,7 +2317,7 @@ function viewPlanner() {
       ${closed.length ? `<div class="sec-head"><h2>Settled</h2></div><div class="list">${closed.map(debtRow).join('')}</div>` : ''}`;
   }
   return `<header class="top"><h1>Planner</h1></header>
-    <div class="sticky-top">${segButtons('planner', [['plans', 'Plans'], ['receivable', 'Owed to me'], ['payable', 'I owe']], tab)}</div>
+    <div class="sticky-top">${segButtons('planner', [['plans', 'Plans'], ['receivable', 'Owed to me'], ['payable', 'I owe']].map(([id, label]) => [id, `${label}${due[id].length ? `<i class="seg-count">${due[id].length}</i>` : ''}`]), tab)}</div>
     ${body}`;
 }
 
@@ -2651,7 +2683,8 @@ function planSheet(p) {
       <input type="hidden" name="id" value="${p ? p.id : ''}">
       <label class="field"><span>What do you plan to buy or do?</span><input type="text" name="name" maxlength="60" autocomplete="off" placeholder="New phone, family trip…" value="${esc(p ? p.name : '')}" ${p ? '' : 'data-autofocus'}></label>
       <label class="field"><span>Expected cost</span><input type="text" inputmode="decimal" name="price" placeholder="0" autocomplete="off" value="${p ? p.price : ''}"></label>
-      ${monthPicker('By when (optional)', 'target', p ? p.target : '', true)}
+      <label class="field"><span>By when (optional)</span><input type="date" name="date" value="${p ? planDate(p) : ''}"></label>
+      <p class="note">You are reminded the day before. The plan stays marked on the Planner tab until you buy it or change the date.</p>
       <label class="field"><span>Priority</span><select name="priority">
         ${['high', 'medium', 'low'].map((v) => `<option value="${v}" ${(p ? p.priority : 'medium') === v ? 'selected' : ''}>${v[0].toUpperCase() + v.slice(1)}</option>`).join('')}</select></label>
       <label class="field"><span>Note (optional)</span><input type="text" name="note" maxlength="120" autocomplete="off" value="${esc(p ? p.note : '')}"></label>
@@ -2701,9 +2734,9 @@ function debtDetailSheet(d) {
       </div>
       <button class="btn">${recv ? 'Record money received' : 'Record payment'}</button>
     </form>`}
-    <button class="btn ghost" data-act="toggle-debt" data-id="${d.id}">${d.settled ? 'Reopen' : 'Mark as settled'}</button>
+    <button class="btn ghost" data-act="toggle-debt" data-id="${d.id}">${d.settled ? 'Reopen' : left > 0 ? (recv ? 'I received all of it' : 'I paid all of it back') : 'Mark as settled'}</button>
     <button class="btn ghost" data-act="edit-debt" data-id="${d.id}">Edit</button>
-    <p class="note" style="margin-top:12px">Money owed to you and money you owe are tracked on their own and do not change your monthly income or expenses.</p>`);
+    <p class="note" style="margin-top:12px">${recv ? 'Money you record as received is added to that day’s income.' : 'Money you record as paid back is added to that day’s expenses.'} You are reminded the day before it is due.</p>`);
 }
 
 function syncRecForm(form) {
@@ -2831,7 +2864,8 @@ function submitPlan(f) {
   if (!name) return toast('Say what the plan is.');
   const price = amountOf(f.price);
   if (Number.isNaN(price) || price < 0) return toast('That cost is not a valid number.');
-  const data = { name, price, target: isYM(pickedMonth(f, 'target')) ? pickedMonth(f, 'target') : '', priority: ['high', 'medium', 'low'].includes(f.priority) ? f.priority : 'medium', note: f.note.trim() };
+  const date = isDate(f.date) ? f.date : '';
+  const data = { name, price, date, target: date.slice(0, 7), priority: ['high', 'medium', 'low'].includes(f.priority) ? f.priority : 'medium', note: f.note.trim() };
   const existing = f.id && state.plans.find((p) => p.id === f.id);
   if (existing) Object.assign(existing, data, { done: !!f.done });
   else state.plans.push({ id: uid(), done: false, ...data });
@@ -2851,13 +2885,25 @@ function submitDebt(f) {
   done();
 }
 
+// Records money received for a debt owed to the person, or money they paid back on one they owe. It is also added to
+// that day's income (received) or expenses (paid back), under the "Other" category of that kind.
+function payDebt(d, amount, date) {
+  const type = d.kind === 'receivable' ? 'income' : 'expense';
+  let c = state.categories.find((x) => x.type === type && isOthers(x));
+  if (!c) { c = { id: uid(), type, group: type === 'income' ? 'secondary' : 'primary', name: 'Others', emoji: '📦', budget: 0, opening: 0, target: 0 }; state.categories.push(c); }
+  const tx = { id: uid(), created: Date.now(), type, amount, categoryId: c.id, date, note: d.kind === 'receivable' ? `Received from ${d.person}` : `Paid back to ${d.person}`,
+    recurringId: '', emiId: '', planId: '', period: '' };
+  state.transactions.push(tx);
+  d.payments.push({ id: uid(), amount, date, txId: tx.id });
+}
+
 function submitDebtPay(f) {
   const d = state.debts.find((x) => x.id === f.id);
   if (!d) return closeSheet();
   const amount = parseAmount(f.amount);
   if (!(amount > 0)) return toast('Enter an amount above zero.');
   if (!isDate(f.date)) return toast('Pick a date.');
-  d.payments.push({ id: uid(), amount, date: f.date });
+  payDebt(d, amount, f.date);
   if (debtPaid(d) >= d.amount) d.settled = true;
   save(); render(); debtDetailSheet(d);
   toast(d.settled ? 'Fully settled' : 'Recorded');
@@ -3581,11 +3627,21 @@ const actions = {
   'add-debt': () => debtSheet(null, ui.planner === 'payable' ? 'payable' : 'receivable'),
   'open-debt': (el) => { const d = find(state.debts, el); if (d) debtDetailSheet(d); },
   'edit-debt': (el) => { const d = find(state.debts, el); if (d) debtSheet(d); },
-  'toggle-debt': (el) => { const d = find(state.debts, el); if (d) { d.settled = !d.settled; done(); } },
+  // Settling a debt records whatever was still open as received or paid back today.
+  'toggle-debt': (el) => {
+    const d = find(state.debts, el);
+    if (!d) return;
+    if (!d.settled && debtLeft(d) > 0) payDebt(d, debtLeft(d), today());
+    d.settled = !d.settled;
+    done();
+  },
   'del-debt': (el) => confirmSheet('Delete this entry?', 'It is removed along with its payment history.', 'Delete', () => { remove('debts', el.dataset.id); save(); render(); }),
   'del-debtpay': (el) => {
     const d = find(state.debts, el);
     if (!d) return;
+    // Removing a payment also takes back the income or expense it added.
+    const gone = d.payments.find((p) => p.id === el.dataset.pay);
+    if (gone && gone.txId) remove('transactions', gone.txId);
     d.payments = d.payments.filter((p) => p.id !== el.dataset.pay);
     save(); render(); debtDetailSheet(d);
   },
