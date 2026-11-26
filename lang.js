@@ -392,6 +392,7 @@ const WORDS = {
   "It is removed along with its payment history.": ["यह अपने भुगतान के इतिहास के साथ हटा दी जाएगी।", "পরিশোধের ইতিহাসসহ এটি মুছে যাবে।"],
 
   // Profiles, guests and comments
+  "Update the app": ["ऐप अपडेट करें", "অ্যাপ আপডেট করুন"],
   "Profile": ["प्रोफ़ाइल", "প্রোফাইল"],
   "Sign in to use profiles, guests and comments.": ["प्रोफ़ाइल, अतिथि और टिप्पणियाँ इस्तेमाल करने के लिए साइन इन करें।", "প্রোফাইল, অতিথি ও মন্তব্য ব্যবহার করতে সাইন ইন করুন।"],
   "Profiles": ["प्रोफ़ाइलें", "প্রোফাইলসমূহ"],
@@ -523,7 +524,6 @@ const WORDS = {
   "Put it on your home screen": ["इसे होम स्क्रीन पर रखें", "হোম স্ক্রিনে রাখুন"],
   "In Safari, tap the Share button, then “Add to Home Screen”. The app then opens full screen and works without internet.": ["Safari में शेयर बटन दबाएँ, फिर “होम स्क्रीन में जोड़ें”। इसके बाद ऐप पूरी स्क्रीन पर खुलता है और बिना इंटरनेट के चलता है।", "Safari-তে শেয়ার বোতাম চাপুন, তারপর “Add to Home Screen”। এরপর অ্যাপ পুরো স্ক্রিনে খোলে এবং ইন্টারনেট ছাড়াও চলে।"],
   "App version": ["ऐप का संस्करण", "অ্যাপের সংস্করণ"],
-  "Get the latest version": ["नया संस्करण लाएँ", "সর্বশেষ সংস্করণ আনুন"],
   "Getting the latest version…": ["नया संस्करण लाया जा रहा है…", "সর্বশেষ সংস্করণ আনা হচ্ছে…"],
 
   // Notifications
@@ -605,6 +605,10 @@ const WORDS = {
 };
 
 const PATTERNS = {
+  // App version (Android app only)
+  "This is version {0}. The released version could not be checked. Connect to the internet and open the app again.": ["यह संस्करण {0} है। जारी संस्करण की जाँच नहीं हो सकी। इंटरनेट से जुड़ें और ऐप फिर खोलें।", "এটি সংস্করণ {0}। প্রকাশিত সংস্করণ যাচাই করা যায়নি। ইন্টারনেটে যুক্ত হয়ে অ্যাপটি আবার খুলুন।"],
+  "This is version {0}. The released version is {1}. Tap “Update the app” to get it. Your data is not affected.": ["यह संस्करण {0} है। जारी संस्करण {1} है। उसे पाने के लिए “ऐप अपडेट करें” दबाएँ। आपके डेटा पर कोई असर नहीं होगा।", "এটি সংস্করণ {0}। প্রকাশিত সংস্করণ {1}। সেটি পেতে “অ্যাপ আপডেট করুন” চাপুন। আপনার ডেটায় কোনো প্রভাব পড়বে না।"],
+  "This is version {0}. The released version is {1}. You have the newest version.": ["यह संस्करण {0} है। जारी संस्करण {1} है। आपके पास सबसे नया संस्करण है।", "এটি সংস্করণ {0}। প্রকাশিত সংস্করণ {1}। আপনার কাছে সর্বশেষ সংস্করণ আছে।"],
   // Profiles, guests and comments
   "Now showing: {0}": ["अभी दिख रही है: {0}", "এখন দেখানো হচ্ছে: {0}"],
   "# {0} new": ["{0} नई", "{0}টি নতুন"],
@@ -619,8 +623,6 @@ const PATTERNS = {
   "# Version {0}": ["संस्करण {0}", "সংস্করণ {0}"],
   "Family Expense Tracker App · version {0} · {1} transaction": ["परिवार का खर्च ट्रैकर ऐप · संस्करण {0} · {1} लेन-देन", "পরিবারের খরচ ট্র্যাকার অ্যাপ · সংস্করণ {0} · {1}টি লেনদেন"],
   "Family Expense Tracker App · version {0} · {1} transactions": ["परिवार का खर्च ट्रैकर ऐप · संस्करण {0} · {1} लेन-देन", "পরিবারের খরচ ট্র্যাকার অ্যাপ · সংস্করণ {0} · {1}টি লেনদেন"],
-  "You have version {0}. Android app {1}. The app updates itself when you open it with internet. If something looks out of date, tap the button. Your data is not affected.": ["आपके पास संस्करण {0} है। Android ऐप {1}। इंटरनेट के साथ खोलने पर ऐप खुद अपडेट हो जाता है। कुछ पुराना लगे तो बटन दबाएँ। आपके डेटा पर असर नहीं पड़ता।", "আপনার কাছে সংস্করণ {0} আছে। Android অ্যাপ {1}। ইন্টারনেটসহ খুললে অ্যাপ নিজে আপডেট হয়। কিছু পুরোনো মনে হলে বোতাম চাপুন। আপনার ডেটায় প্রভাব পড়ে না।"],
-  "You have version {0}. The app updates itself when you open it with internet. If something looks out of date, tap the button. Your data is not affected.": ["आपके पास संस्करण {0} है। इंटरनेट के साथ खोलने पर ऐप खुद अपडेट हो जाता है। कुछ पुराना लगे तो बटन दबाएँ। आपके डेटा पर असर नहीं पड़ता।", "আপনার কাছে সংস্করণ {0} আছে। ইন্টারনেটসহ খুললে অ্যাপ নিজে আপডেট হয়। কিছু পুরোনো মনে হলে বোতাম চাপুন। আপনার ডেটায় প্রভাব পড়ে না।"],
   "Password (at least {0} characters)": ["पासवर्ड (कम से कम {0} अक्षर)", "পাসওয়ার্ড (অন্তত {0} অক্ষর)"],
   "New password (at least {0} characters)": ["नया पासवर्ड (कम से कम {0} अक्षर)", "নতুন পাসওয়ার্ড (অন্তত {0} অক্ষর)"],
   "We sent a confirmation link to {0}. Open it, then come back to this app and sign in with your email and password.": ["हमने {0} पर पुष्टि का लिंक भेजा है। उसे खोलें, फिर इस ऐप पर लौटकर अपने ईमेल और पासवर्ड से साइन इन करें।", "আমরা {0}-এ একটি নিশ্চিতকরণ লিংক পাঠিয়েছি। সেটি খুলুন, তারপর এই অ্যাপে ফিরে ইমেইল ও পাসওয়ার্ড দিয়ে সাইন ইন করুন।"],

@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '59';
+const APP_VERSION = '64';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -977,6 +977,26 @@ window.fetaUpdate = (state, value) => {
   else if (!open) render();
 };
 
+// The version numbers are only shown in the Android app. There, Setup says which version this is and which one is
+// released, read from the website each time the app is opened.
+let releasedVersion = '';
+async function checkReleased() {
+  if (!android) return;
+  try {
+    const res = await fetch(`sw.js?check=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) return;
+    const m = /const VERSION = '(\d+)'/.exec(await res.text());
+    if (!m || m[1] === releasedVersion) return;
+    releasedVersion = m[1];
+    if (ui.tab === 'more' && !ui.setup && !$('#sheet-root').firstChild) render();
+  } catch (e) { /* offline: try again next time */ }
+}
+function versionNote() {
+  if (!releasedVersion) return `This is version ${APP_VERSION}. The released version could not be checked. Connect to the internet and open the app again.`;
+  if (Number(releasedVersion) > Number(APP_VERSION)) return `This is version ${APP_VERSION}. The released version is ${releasedVersion}. Tap “Update the app” to get it. Your data is not affected.`;
+  return `This is version ${APP_VERSION}. The released version is ${releasedVersion}. You have the newest version.`;
+}
+
 function androidUpdateCard() {
   if (!androidUpdate) return '';
   const stage = updateUi.stage;
@@ -1219,6 +1239,7 @@ function openNotices() {
     else { state.seen = mergeSeen(state.seen, ids); save(); }
   }
   ui.page = 'notices';
+  nextSlide = 'from-right';
   closeSheet(); render(); window.scrollTo(0, 0);
 }
 function viewNotices() {
@@ -1376,7 +1397,8 @@ function render() {
   // When the tab changes, the glass capsule slides from the old tab to the new one and the page slides in from that side.
   const index = tabs.findIndex(([id]) => id === ui.tab);
   const from = lastTabIndex == null ? index : lastTabIndex;
-  const slide = index > from ? 'from-right' : index < from ? 'from-left' : '';
+  const slide = index > from ? 'from-right' : index < from ? 'from-left' : nextSlide;
+  nextSlide = '';
   lastTabIndex = index;
   app.innerHTML = `
     <div class="view ${slide}">${notices ? viewNotices() : profileBar + views[ui.tab]()}</div>
@@ -1389,9 +1411,16 @@ function render() {
   if (from !== index) {
     requestAnimationFrame(() => requestAnimationFrame(() => { const pill = $('.tab-pill'); if (pill) pill.style.setProperty('--i', index); }));
   }
+  if (navSlide) { const nav = $('.view .month-nav'); if (nav) nav.classList.add(navSlide); navSlide = ''; }
   slidePills();
 }
 let lastTabIndex = null;
+// Set just before drawing a page that is opened from, or goes back to, the screen it belongs to: it slides in from that side.
+let nextSlide = '';
+// Set just before drawing a screen whose month, week, day or year was changed with its arrows: what is under the
+// arrows slides in from the right when going forward in time and from the left when going back.
+let navSlide = '';
+const dateSlide = (d) => { navSlide = d > 0 ? 'changed-right' : d < 0 ? 'changed-left' : ''; };
 
 function currencyOptions(selected) {
   const list = CURRENCIES.includes(selected) ? CURRENCIES : [selected, ...CURRENCIES];
@@ -1416,7 +1445,9 @@ function segButtons(act, options, current) {
   const to = Math.max(0, options.findIndex(([v]) => v === current));
   const from = act in segLast ? segLast[act] : to;
   segLast[act] = to;
-  return `<div class="seg" style="--n:${options.length};grid-template-columns:repeat(${options.length},1fr)">
+  // When the choice changed, whatever is shown under the switch slides in from the side of the new choice.
+  const moved = to > from ? 'changed-right' : to < from ? 'changed-left' : '';
+  return `<div class="seg ${moved}" style="--n:${options.length};grid-template-columns:repeat(${options.length},1fr)">
     <i class="seg-pill" style="--i:${from}" ${from === to ? '' : `data-to="${to}"`} aria-hidden="true"></i>${options.map(([v, l]) =>
     `<button type="button" class="${v === current ? 'on' : ''}" data-act="${act}" data-id="${v}" aria-pressed="${v === current}">${l}</button>`).join('')}</div>`;
 }
@@ -1495,7 +1526,7 @@ function viewWelcome() {
       <p class="note">Your data is backed up online in your account and stays the same on every device you sign in on.</p>
     </div>
     <div class="welcome-foot">
-      <p class="note">Version ${APP_VERSION}</p>
+      ${android ? `<p class="note">Version ${APP_VERSION}</p>` : ''}
     </div>
   </div>`;
 }
@@ -2246,13 +2277,13 @@ function viewMore() {
     </section>`}
     ${window.FetaAndroid ? '' : `<div class="sec-head"><h2>Put it on your home screen</h2></div>
     <section class="card"><p class="note" style="margin:0">In Safari, tap the Share button, then “Add to Home Screen”. The app then opens full screen and works without internet.</p></section>`}
-    <div class="sec-head"><h2>App version</h2></div>
+    ${android ? `<div class="sec-head"><h2>App version</h2></div>
     ${androidUpdateCard()}
     <section class="card">
-      <p class="note" style="margin:0 0 14px">You have version ${APP_VERSION}. ${android ? ` Android app ${androidVersion()}.` : ''} The app updates itself when you open it with internet. If something looks out of date, tap the button. Your data is not affected.</p>
-      <button class="btn ghost" data-act="update-app">Get the latest version</button>
-    </section>
-    <div class="brand-foot">${LOGO_SVG}<p class="note">Family Expense Tracker App · version ${APP_VERSION} · ${plural(state.transactions.length, 'transaction')}</p></div>`;
+      <p class="note" style="margin:0 0 14px">${versionNote()}</p>
+      <button class="btn ghost" data-act="update-app">Update the app</button>
+    </section>` : ''}
+    <div class="brand-foot">${LOGO_SVG}<p class="note">${android ? `Family Expense Tracker App · version ${APP_VERSION} · ${plural(state.transactions.length, 'transaction')}` : 'Family Expense Tracker App'}</p></div>`;
 }
 
 /* ---------- Sheets ---------- */
@@ -3263,13 +3294,13 @@ const remove = (key, id) => { state[key] = state[key].filter((x) => x.id !== id)
 
 const actions = {
   'tab': (el) => { ui.tab = el.dataset.id; ui.bar = null; ui.setup = null; ui.page = null; render(); window.scrollTo(0, 0); },
-  'setup-open': (el) => { if (isGuest() && el.dataset.id !== 'profile') return; ui.setup = el.dataset.id; render(); window.scrollTo(0, 0); },
-  'setup-back': () => { ui.setup = null; render(); window.scrollTo(0, 0); },
+  'setup-open': (el) => { if (isGuest() && el.dataset.id !== 'profile') return; ui.setup = el.dataset.id; nextSlide = 'from-right'; render(); window.scrollTo(0, 0); },
+  'setup-back': () => { ui.setup = null; nextSlide = 'from-left'; render(); window.scrollTo(0, 0); },
   // Using the app without an account is switched off: the welcome screen no longer offers it. The action is kept for the tests.
   'start': () => { startApp(); save(); render(); },
   'welcome-points': () => welcomePointsSheet(),
   'notices': () => openNotices(),
-  'notices-back': () => { ui.page = null; render(); window.scrollTo(0, 0); },
+  'notices-back': () => { ui.page = null; nextSlide = 'from-left'; render(); window.scrollTo(0, 0); },
   'notice-go': (el) => window.fetaGo(el.dataset.id, el.dataset.month, el.dataset.tx),
   'notify-ask': () => { try { android.notifyAsk(); } catch (e) { toast('Open your phone’s settings and allow notifications for FETA.'); } },
   'android-update': () => androidUpdateSheet(),
@@ -3353,10 +3384,10 @@ const actions = {
   }),
   'close-sheet': () => closeSheet(),
   'confirm-yes': () => { const fn = pendingConfirm; closeSheet(); if (fn) fn(); },
-  'month': (el) => { ui.month = addMonths(ui.month, Number(el.dataset.d)); render(); },
-  'month-now': () => { ui.month = curYM(); render(); },
+  'month': (el) => { ui.month = addMonths(ui.month, Number(el.dataset.d)); dateSlide(Number(el.dataset.d)); render(); },
+  'month-now': () => { dateSlide(curYM() > ui.month ? 1 : curYM() < ui.month ? -1 : 0); ui.month = curYM(); render(); },
   'home-mode': (el) => { ui.home = el.dataset.id === 'year' ? 'year' : 'month'; render(); window.scrollTo(0, 0); },
-  'home-year': (el) => { ui.month = `${Number(ui.month.slice(0, 4)) + Number(el.dataset.d)}${ui.month.slice(4)}`; render(); },
+  'home-year': (el) => { ui.month = `${Number(ui.month.slice(0, 4)) + Number(el.dataset.d)}${ui.month.slice(4)}`; dateSlide(Number(el.dataset.d)); render(); },
   'home-month': (el) => { if (isYM(el.dataset.id)) { ui.month = el.dataset.id; ui.home = 'month'; render(); window.scrollTo(0, 0); } },
   'year-report': () => { ui.tab = 'reports'; ui.rep.period = 'year'; ui.rep.cursor = `${ui.month.slice(0, 4)}-01-01`; ui.bar = null; render(); window.scrollTo(0, 0); },
   'filter': (el) => { ui.filter = el.dataset.id; render(); },
@@ -3364,7 +3395,7 @@ const actions = {
 
   'add-tx': () => txSheet(null, isGuest() ? { type: 'expense', lockType: true } : ui.tab === 'reports' ? { type: ui.rep.measure, lockType: true } : {}),
   'add-saving': () => txSheet(null, { type: 'saving', lockType: true }),
-  'save-year': (el) => { ui.saveYear = String(Number(ui.saveYear) + Number(el.dataset.d)); ui.bar = null; render(); },
+  'save-year': (el) => { ui.saveYear = String(Number(ui.saveYear) + Number(el.dataset.d)); ui.bar = null; dateSlide(Number(el.dataset.d)); render(); },
   'fund': (el) => {
     const id = el.dataset.id;
     const rows = state.transactions.filter((t) => t.type === 'saving' && (cat(t.categoryId) ? t.categoryId : '') === id);
@@ -3469,7 +3500,7 @@ const actions = {
     const d = Number(el.dataset.d);
     const { period, cursor } = ui.rep;
     ui.rep.cursor = period === 'day' ? addDays(cursor, d) : period === 'week' ? addDays(cursor, 7 * d) : period === 'month' ? addMonths(cursor.slice(0, 7), d) + '-01' : `${Number(cursor.slice(0, 4)) + d}-01-01`;
-    ui.bar = null; render();
+    ui.bar = null; dateSlide(d); render();
   },
   'rep-goto': (el) => { ui.rep.period = 'month'; ui.rep.cursor = el.dataset.id; ui.bar = null; render(); window.scrollTo(0, 0); },
   'rep-cat': (el) => {
@@ -3586,6 +3617,71 @@ document.addEventListener('touchmove', (e) => {
   e.preventDefault();
 }, { passive: false });
 
+// Pulling the page down from its top syncs with the account, like refreshing in other apps. The page itself comes
+// down with the finger and a round arrow shows in the gap above it; let go once it has come far enough and the page
+// stays down a little while the arrow spins, then goes back up when the sync is done.
+const puller = document.createElement('div');
+puller.className = 'ptr';
+puller.setAttribute('aria-hidden', 'true');
+puller.innerHTML = '<svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/></svg>';
+document.body.append(puller);
+const PULL_ENOUGH = 60;
+let pull = null;
+let refreshing = false;
+function showPuller(depth) {
+  // The screen's content is moved by this much (see .view in the styles); the arrow sits in the middle of the gap.
+  document.documentElement.style.setProperty('--pull', `${depth}px`);
+  puller.style.transform = `translateY(${depth / 2 - 27}px)`;
+  puller.style.opacity = String(Math.min(1, depth / 40));
+  puller.firstChild.style.transform = `rotate(${depth * 4}deg)`;
+  puller.classList.toggle('ready', depth >= PULL_ENOUGH);
+}
+async function pullRefresh() {
+  refreshing = true;
+  puller.classList.add('back', 'spin');
+  document.documentElement.classList.add('pull-back');
+  showPuller(64);
+  puller.firstChild.style.transform = '';
+  await Promise.all([syncNow(), new Promise((r) => setTimeout(r, 700))]);
+  if (!$('#sheet-root').firstChild) render();
+  // The screen was just drawn again. It has to be seen held down first, or it would jump back up instead of easing back.
+  const view = $('.view');
+  if (view) void view.offsetHeight;
+  puller.classList.remove('spin');
+  showPuller(0);
+  refreshing = false;
+  if (sync.error) toast(syncStatus());
+}
+document.addEventListener('touchstart', (e) => {
+  const usable = !refreshing && e.touches.length === 1 && window.scrollY <= 0 && !$('#sheet-root').firstChild && state.settings.started && !!sync.session;
+  pull = usable ? { x: e.touches[0].clientX, y: e.touches[0].clientY, depth: 0, on: false } : null;
+}, { passive: true });
+document.addEventListener('touchmove', (e) => {
+  if (!pull) return;
+  const dx = e.touches[0].clientX - pull.x;
+  const dy = e.touches[0].clientY - pull.y;
+  if (!pull.on) {
+    // Only a clear downward drag that starts at the very top counts; scrolling up or sideways is left alone.
+    if (dy < -4 || Math.abs(dx) > 14 || window.scrollY > 0) { pull = null; return; }
+    if (dy < 10) return;
+    pull.on = true;
+    puller.classList.remove('back');
+    document.documentElement.classList.remove('pull-back');
+  }
+  pull.depth = Math.max(0, Math.min(130, dy * 0.5));
+  showPuller(pull.depth);
+}, { passive: true });
+const endPull = () => {
+  if (!pull || !pull.on) { pull = null; return; }
+  const far = pull.depth >= PULL_ENOUGH;
+  pull = null;
+  puller.classList.add('back');
+  document.documentElement.classList.add('pull-back');
+  if (far) pullRefresh(); else showPuller(0);
+};
+document.addEventListener('touchend', endPull, { passive: true });
+document.addEventListener('touchcancel', () => { if (pull && pull.on) { puller.classList.add('back'); document.documentElement.classList.add('pull-back'); showPuller(0); } pull = null; }, { passive: true });
+
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && $('#sheet-root').firstChild) closeSheet();
 });
@@ -3623,7 +3719,8 @@ handleAuthLink().then((handled) => { if (!handled) syncNow(); });
 // The Android app asks once, the first time it is used, whether it may show notifications.
 try { if (android && android.notifyAskFirst && state.settings.started) android.notifyAskFirst(); } catch (e) { /* older app */ }
 checkAndroidUpdate();
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { syncNow(); checkAndroidUpdate(); } });
+checkReleased();
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { syncNow(); checkAndroidUpdate(); checkReleased(); } });
 window.addEventListener('online', () => syncNow());
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {

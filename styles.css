@@ -50,7 +50,18 @@
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html { -webkit-text-size-adjust: 100%; }
+/* The browser's own pull-to-reload is switched off: pulling down syncs instead (see .ptr). */
+html { -webkit-text-size-adjust: 100%; overscroll-behavior-y: contain; }
+.ptr { position: fixed; z-index: 15; top: calc(env(safe-area-inset-top) + 6px); left: 50%; width: 42px; height: 42px; margin-left: -21px; display: grid; place-items: center;
+  border-radius: 50%; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); color: var(--muted); transform: translateY(-56px); opacity: 0; pointer-events: none; }
+.ptr.back { transition: transform .35s ease-in-out, opacity .35s ease-in-out; }
+.ptr.ready, .ptr.spin { color: var(--accent); }
+.ptr svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ptr.spin svg { animation: ptr-spin .8s linear infinite; }
+@keyframes ptr-spin { to { transform: rotate(360deg); } }
+/* While the page is pulled down to sync, its content moves down by --pull, leaving a gap for the arrow. */
+.view { translate: 0 var(--pull, 0px); }
+.pull-back .view { transition: translate .35s ease-in-out; }
 body {
   margin: 0;
   background: var(--bg);
@@ -397,9 +408,18 @@ div.row:active { background: none; }
 .view.from-left { animation: view-from-left .32s cubic-bezier(.2, .8, .2, 1) both; }
 @keyframes view-from-right { from { transform: translateX(36px); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes view-from-left { from { transform: translateX(-36px); opacity: 0; } to { transform: none; opacity: 1; } }
+/* Changing a switch (Month/Year, All/Expenses/Income, ...) or the date (the arrows beside a month, week, day or year)
+   slides in what is shown under it: from the right for a choice to the right or a later date, from the left otherwise.
+   The switch or the arrows may sit in the screen's header or among its content. */
+.view .changed-right ~ *, .view > :has(.changed-right) ~ * { animation: seg-from-right .28s cubic-bezier(.2, .8, .2, 1) backwards; }
+.view .changed-left ~ *, .view > :has(.changed-left) ~ * { animation: seg-from-left .28s cubic-bezier(.2, .8, .2, 1) backwards; }
+@keyframes seg-from-right { from { transform: translateX(22px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes seg-from-left { from { transform: translateX(-22px); opacity: 0; } to { transform: none; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
   .tab-pill { transition: none; }
   .view.from-right, .view.from-left { animation: none; }
+  .view [class*="changed-"] ~ *, .view > :has([class*="changed-"]) ~ * { animation: none; }
+  .pull-back .view, .ptr.back { transition: none; }
 }
 
 /* The switch and the month changer at the top stay in place while the page scrolls under them, blurred. */
