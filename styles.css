@@ -138,6 +138,8 @@ h1, h2, h3, p { margin: 0; }
 .over { color: var(--crit); font-weight: 600; }
 .meter { display: block; height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
 .meter > span { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
+.limit-row .meter { margin: 2px 0; }
+.row[data-act="edit-plan"] .meter { margin: 2px 0 -2px; }
 .meter.is-over > span { background: var(--crit); }
 .empty { padding: 22px 16px; text-align: center; color: var(--ink2); font-size: 15px; }
 .day-head { margin: 18px 4px 6px; font-size: 13px; color: var(--ink2); display: flex; justify-content: space-between; }

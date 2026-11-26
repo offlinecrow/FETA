@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '69';
+const APP_VERSION = '71';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -298,7 +298,11 @@ function sanitize(s) {
     // Money that was already in a savings fund before the app was used.
     opening: c.type === 'saving' ? pos(c.opening) : 0,
     // The amount a savings fund is meant to reach.
-    target: c.type === 'saving' ? pos(c.target) : 0
+    target: c.type === 'saving' ? pos(c.target) : 0,
+    // A savings fund made for a plan on the Planner, and whether the plan was bought with it: the money is then spent,
+    // so the fund no longer counts in what is saved.
+    ...(c.type === 'saving' && okId(c.planId) ? { planId: c.planId } : {}),
+    ...(c.type === 'saving' && c.used ? { used: true } : {})
   }));
   out.transactions = arr(s.transactions).filter((t) => isDate(t.date)).map((t) => ({
     id: t.id, type: type(t.type), amount: Math.abs(num(t.amount)), categoryId: ref(t.categoryId), date: t.date,
@@ -332,6 +336,8 @@ function sanitize(s) {
     id: p.id, name: str(p.name, 60) || 'Plan', price: pos(p.price),
     // The day the plan is for. Older plans only had a month ("target"), which is kept in step with the day.
     date: isDate(p.date) ? p.date : '', target: isDate(p.date) ? p.date.slice(0, 7) : isYM(p.target) ? p.target : '',
+    // The savings fund this plan is saved up in.
+    fundId: ref(p.fundId),
     priority: ['high', 'medium', 'low'].includes(p.priority) ? p.priority : 'medium', note: str(p.note, 120), done: !!p.done
   }));
   out.debts = arr(s.debts).map((d) => ({
@@ -1142,6 +1148,21 @@ const debtPaid = (d) => sum(d.payments, (p) => p.amount);
 const debtLeft = (d) => (d.settled ? 0 : Math.max(0, r3(d.amount - debtPaid(d))));
 const debtTotal = (kind) => sum(state.debts.filter((d) => d.kind === kind), debtLeft);
 
+// Every plan has a savings fund of its own, with the plan's cost as its target, so money can be set aside for it.
+const savedIn = (c) => (c ? r3(sum(state.transactions.filter((t) => t.type === 'saving' && t.categoryId === c.id), (t) => t.amount) + (c.opening || 0)) : 0);
+const planFund = (p) => (p.fundId && cat(p.fundId) && cat(p.fundId).type === 'saving' ? cat(p.fundId) : null);
+function ensurePlanFund(p) {
+  let c = planFund(p);
+  if (!c) {
+    c = { id: uid(), type: 'saving', group: 'primary', name: p.name, emoji: '🎯', budget: 0, opening: 0, target: p.price, planId: p.id };
+    state.categories.push(c);
+    p.fundId = c.id;
+  }
+  return c;
+}
+// A fund whose plan was bought holds no money any more.
+const liveFunds = () => catsOf('saving').filter((c) => !c.used);
+
 // The day a plan is for. A plan from before plans had a day counts from the first of its month.
 const planDate = (p) => p.date || (p.target ? `${p.target}-01` : '');
 // Planner items whose reminder has come: their day is tomorrow, today or already past, and they are still open.
@@ -1255,7 +1276,7 @@ function buildNotices() {
   if (want('goals')) {
     const saved = {};
     for (const t of state.transactions) if (t.type === 'saving') saved[t.categoryId] = r3((saved[t.categoryId] || 0) + t.amount);
-    for (const c of catsOf('saving')) {
+    for (const c of liveFunds()) {
       const have = r3((saved[c.id] || 0) + (c.opening || 0));
       if (c.target > 0 && have >= c.target) add('goals', `goal:${c.id}:${c.target}`, now, `${c.name} reached its target`, `${fmt(have)} saved. The target was ${fmt(c.target)}.`, 'savings');
     }
@@ -1527,7 +1548,7 @@ function currencyOptions(selected) {
 
 function catOptions(type, selected) {
   const opt = (c) => `<option value="${c.id}" ${c.id === selected ? 'selected' : ''}>${esc(catLabel(c))}</option>`;
-  const cats = catsOf(type);
+  const cats = catsOf(type).filter((c) => !c.used || c.id === selected);
   if (!cats.length) return '<option value="">No categories yet</option>';
   if (type !== 'income') return cats.map(opt).join('');
   return ['primary', 'secondary'].map((g) => {
@@ -1896,8 +1917,11 @@ function viewSavings() {
   const all = state.transactions.filter((t) => t.type === 'saving');
   const year = ui.saveYear;
   const inYear = all.filter((t) => t.date.startsWith(year));
-  const opening = sum(catsOf('saving'), (c) => c.opening || 0);
-  const total = r3(sum(all, (t) => t.amount) + opening);
+  // A fund whose plan was bought is spent: it is left out of what is saved now, but stays in the months it was saved in.
+  const usedIds = new Set(catsOf('saving').filter((c) => c.used).map((c) => c.id));
+  const kept = all.filter((t) => !usedIds.has(t.categoryId));
+  const opening = sum(liveFunds(), (c) => c.opening || 0);
+  const total = r3(sum(kept, (t) => t.amount) + opening);
   const yearTotal = sum(inYear, (t) => t.amount);
   const thisMonth = sum(all.filter((t) => t.date.startsWith(curYM())), (t) => t.amount);
   const monthsUsed = new Set(inYear.map((t) => t.date.slice(0, 7))).size;
@@ -1905,8 +1929,8 @@ function viewSavings() {
   const rate = yearIncome > 0 ? Math.round((yearTotal / yearIncome) * 100) : 0;
 
   const byFund = {};
-  for (const c of catsOf('saving')) if (c.opening > 0 || c.target > 0) byFund[c.id] = c.opening || 0;
-  for (const t of all) { const k = cat(t.categoryId) ? t.categoryId : ''; byFund[k] = r3((byFund[k] || 0) + t.amount); }
+  for (const c of liveFunds()) if (c.opening > 0 || c.target > 0) byFund[c.id] = c.opening || 0;
+  for (const t of kept) { const k = cat(t.categoryId) ? t.categoryId : ''; byFund[k] = r3((byFund[k] || 0) + t.amount); }
   const funds = Object.entries(byFund).map(([id, v]) => ({ id, c: cat(id), v })).sort((a, z) => z.v - a.v);
   const top = funds.length ? funds[0].v : 0;
 
@@ -1999,6 +2023,34 @@ function rankRows(list, measure, period) {
   }).join('')}</div>`;
 }
 
+// Every expense category with a bar showing how much of its monthly limit is used: green when little is spent,
+// turning red as it fills. A category with no limit is listed too, so one can be set from here. Limits are per month,
+// so a day or week report shows the month it falls in, and a year report compares the year with twelve times the limit.
+function limitsSection(period, prefix, from) {
+  const year = period === 'year';
+  const scope = year ? prefix : period === 'month' ? prefix : from.slice(0, 7);
+  const spent = {};
+  for (const t of state.transactions) if (t.type === 'expense' && t.date.startsWith(scope)) spent[t.categoryId] = r3((spent[t.categoryId] || 0) + t.amount);
+  const guest = isGuest();
+  const rows = catsOf('expense').map((c) => ({ c, used: spent[c.id] || 0, limit: c.budget > 0 ? c.budget * (year ? 12 : 1) : 0 }))
+    .filter((x) => x.limit > 0 || !guest)
+    .sort((a, b) => (b.limit > 0) - (a.limit > 0) || (b.limit ? b.used / b.limit - a.used / a.limit : b.used - a.used));
+  if (!rows.length) return '';
+  const row = ({ c, used, limit }) => {
+    const share = limit > 0 ? used / limit : 0;
+    const fill = Math.min(1, share);
+    const sub = !limit ? (guest ? 'No limit set' : 'No limit set. Tap to set one.')
+      : used > limit ? `<span class="over">⚠ Over the limit by ${fmt(r3(used - limit))}</span>` : `${fmt(r3(limit - used))} left · ${Math.round(share * 100)}% used`;
+    const inner = `<span class="emoji" aria-hidden="true">${esc(c.emoji || '•')}</span>
+      <span class="row-main"><span class="row-top"><span class="name">${esc(c.name)}</span><span class="amt">${fmt(used)}${limit ? `<span class="of"> / ${fmt(limit)}</span>` : ''}</span></span>
+      ${limit ? `<span class="meter" role="img" aria-label="${Math.round(share * 100)}% of the limit used"><span style="width:${fill * 100}%;background:hsl(${Math.round(130 * (1 - fill))} 68% 44%)"></span></span>` : ''}
+      <span class="row-sub" style="white-space:normal">${sub}</span></span>`;
+    return guest ? `<div class="row limit-row">${inner}</div>` : `<button class="row limit-row" data-act="edit-cat" data-id="${c.id}">${inner}</button>`;
+  };
+  return `<div class="sec-head"><h2>Spending limits</h2><span class="sub">${year ? prefix : monthName(scope)}</span></div>
+    <div class="list">${rows.map(row).join('')}</div>`;
+}
+
 function viewReports() {
   const { period, prefix, from, to, label, list } = repScope();
   const measure = ui.rep.measure;
@@ -2077,6 +2129,7 @@ function viewReports() {
       ${measure === 'income' && carry ? `<div class="row-top" style="margin-bottom:14px"><span class="name">${carried}</span><span class="amt inc">+${fmt(carry)}</span></div>` : ''}
       ${split}${rankRows(mlist, measure, period)}
     </section>
+    ${limitsSection(period, prefix, from)}
     ${yearTable}
     ${period === 'day' ? `<div class="sec-head"><h2>That day</h2></div>${txGroups(list, 'Nothing recorded on this day.')}` : ''}
     ${period === 'week' ? `<div class="sec-head"><h2>That week</h2></div>${txGroups(list, 'Nothing recorded in this week.')}` : ''}`;
@@ -2273,11 +2326,18 @@ function sendReport(mode) {
 function planRow(p) {
   const day = planDate(p);
   const months = p.target ? monthsBetween(curYM(), p.target) : null;
+  const fund = planFund(p);
+  const saved = fund && !fund.used ? savedIn(fund) : 0;
+  const toGo = Math.max(0, r3(p.price - saved));
   let sub = p.done ? '✓ Done' : day ? `By ${fmtShort(day)}${day.slice(0, 4) === today().slice(0, 4) ? '' : ` ${day.slice(0, 4)}`}` : 'No date set';
-  if (!p.done && months != null && months > 0) sub += ` · save ${fmt(Math.ceil(p.price / months))} a month`;
+  if (!p.done && months != null && months > 0 && toGo > 0) sub += ` · save ${fmt(Math.ceil(toGo / months))} a month`;
   const pill = duePill(day, !p.done) || (p.done ? '' : `<span class="pill">${p.priority[0].toUpperCase() + p.priority.slice(1)}</span>`);
+  // How much of the cost is already saved.
+  const bar = !p.done && p.price > 0 ? `<span class="meter" role="img" aria-label="${Math.round(Math.min(1, saved / p.price) * 100)}% saved"><span style="width:${Math.min(1, saved / p.price) * 100}%"></span></span>
+    <span class="row-sub">${saved >= p.price ? `🎯 ${fmt(saved)} saved, enough to buy it` : `${fmt(saved)} saved of ${fmt(p.price)}`}</span>` : '';
   return `<button class="row ${!p.done && day && day < today() ? 'is-unpaid' : ''}" data-act="edit-plan" data-id="${p.id}">
     <span class="row-main"><span class="row-top"><span class="name">${esc(p.name)}</span><span class="amt">${fmt(p.price)}</span></span>
+    ${bar}
     <span class="row-top"><span class="row-sub">${sub}${p.note ? ' · ' + esc(p.note) : ''}</span>${pill}</span>
     </span></button>`;
 }
@@ -2460,6 +2520,7 @@ function txSheet(tx, preset = {}) {
         <div class="field"><span>Icon</span><div class="emoji-pick" role="radiogroup" aria-label="Icon">${CAT_ICONS.map((e) =>
           `<label><input type="radio" name="newCatEmoji" value="${e}"><span>${e}</span></label>`).join('')}</div></div>
       </div>
+      ${!tx && preset.hint ? `<p class="note">${esc(preset.hint)}</p>` : ''}
       <button class="btn">${tx ? 'Save changes' : preset.cta || 'Add'}</button>
       ${!tx && preset.canSkip ? `<button type="button" class="btn ghost" data-act="skip-due" data-id="${v.recurringId}" data-period="${v.period}">${isDate(v.period) ? 'Skip this week' : 'Skip this month'}</button>` : ''}
       ${tx && !guest && !linked && tx.type !== 'income' ? `<button type="button" class="btn ghost" data-act="tx-to-bill" data-id="${tx.id}">Make this a monthly bill</button>` : ''}
@@ -2473,7 +2534,7 @@ function leftoverSheet(ym) {
   const next = addMonths(ym, 1);
   const amount = carryInto(next);
   if (isGuest() || !(amount > 0)) return closeSheet();
-  const funds = catsOf('saving');
+  const funds = liveFunds();
   openSheet(`Left from ${monthName(ym)}`, `
     <p>${ymLabel(ym)} ended with ${fmt(amount)} left. What do you want to do with it?</p>
     <button class="btn" data-act="leftover-do" data-id="${ym}" data-how="carry">Carry it over to ${monthName(next)}</button>
@@ -2689,8 +2750,10 @@ function planSheet(p) {
         ${['high', 'medium', 'low'].map((v) => `<option value="${v}" ${(p ? p.priority : 'medium') === v ? 'selected' : ''}>${v[0].toUpperCase() + v.slice(1)}</option>`).join('')}</select></label>
       <label class="field"><span>Note (optional)</span><input type="text" name="note" maxlength="120" autocomplete="off" value="${esc(p ? p.note : '')}"></label>
       ${p ? `<label class="check"><input type="checkbox" name="done" ${p.done ? 'checked' : ''}><span>Done</span></label>` : ''}
+      ${p ? '' : '<p class="note">The plan also gets a savings fund of its own, so you can set money aside for it and see how far you are.</p>'}
       <button class="btn">${p ? 'Save changes' : 'Add plan'}</button>
-      ${p && !p.done ? `<button type="button" class="btn ghost" data-act="plan-bought" data-id="${p.id}">I bought it, add as an expense</button>` : ''}
+      ${p && !p.done ? `<button type="button" class="btn ghost" data-act="plan-save" data-id="${p.id}">Add savings for this plan</button>
+      <button type="button" class="btn ghost" data-act="plan-bought" data-id="${p.id}">I bought it, add as an expense</button>` : ''}
       ${p ? `<button type="button" class="btn danger" data-act="del-plan" data-id="${p.id}">Delete</button>` : ''}
     </form>`);
 }
@@ -2776,7 +2839,21 @@ function submitTx(f) {
   const existing = f.id && state.transactions.find((t) => t.id === f.id);
   if (existing) Object.assign(existing, data);
   else state.transactions.push({ id: uid(), created: Date.now(), ...data });
-  if (data.planId) { const p = state.plans.find((x) => x.id === data.planId); if (p) p.done = true; }
+  if (data.planId) {
+    const p = state.plans.find((x) => x.id === data.planId);
+    if (p) p.done = true;
+    // Buying a plan uses up what was saved for it. That money was already taken out of earlier months as savings, so it
+    // comes back in on the day of the purchase as income "From savings", and the fund stops counting as money saved.
+    const fund = p && !existing ? planFund(p) : null;
+    const saved = fund && !fund.used ? savedIn(fund) : 0;
+    if (fund) fund.used = true;
+    if (saved > 0) {
+      let other = state.categories.find((x) => x.type === 'income' && isOthers(x));
+      if (!other) { other = { id: uid(), type: 'income', group: 'secondary', name: 'Others', emoji: '📦', budget: 0, opening: 0, target: 0 }; state.categories.push(other); }
+      state.transactions.push({ id: uid(), created: Date.now(), type: 'income', amount: saved, categoryId: other.id, date: data.date, note: `From savings for ${p.name}`,
+        recurringId: '', emiId: '', planId: '', period: '' });
+    }
+  }
   done();
   toast(existing ? 'Saved' : `${TYPE_LABEL[f.type]} added`);
 }
@@ -2869,6 +2946,12 @@ function submitPlan(f) {
   const existing = f.id && state.plans.find((p) => p.id === f.id);
   if (existing) Object.assign(existing, data, { done: !!f.done });
   else state.plans.push({ id: uid(), done: false, ...data });
+  const plan = existing || state.plans[state.plans.length - 1];
+  // A new plan gets its savings fund; a changed one keeps the fund's name and target the same as the plan's.
+  if (!plan.done) {
+    const fund = ensurePlanFund(plan);
+    if (!fund.used) { fund.name = plan.name.slice(0, 40); fund.target = plan.price; }
+  }
   done();
 }
 
@@ -3619,9 +3702,20 @@ const actions = {
   'add-plan': () => planSheet(null),
   'edit-plan': (el) => { const p = find(state.plans, el); if (p) planSheet(p); },
   'del-plan': (el) => { remove('plans', el.dataset.id); done(); },
+  'plan-save': (el) => {
+    const p = find(state.plans, el);
+    if (!p) return;
+    const fund = ensurePlanFund(p);
+    save();
+    txSheet(null, { title: `Save for: ${p.name}`, type: 'saving', lockType: true, categoryId: fund.id });
+  },
   'plan-bought': (el) => {
     const p = find(state.plans, el);
-    if (p) txSheet(null, { title: `Bought: ${p.name}`, type: 'expense', amount: p.price, note: p.name, planId: p.id, date: today() });
+    if (!p) return;
+    const fund = planFund(p);
+    const saved = fund && !fund.used ? savedIn(fund) : 0;
+    txSheet(null, { title: `Bought: ${p.name}`, type: 'expense', amount: p.price, note: p.name, planId: p.id, date: today(),
+      hint: saved > 0 ? `The ${fmt(saved)} you saved for this is added to the same day as income “From savings”, so it is not counted against this month twice.` : '' });
   },
 
   'add-debt': () => debtSheet(null, ui.planner === 'payable' ? 'payable' : 'receivable'),
