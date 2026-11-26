@@ -73,6 +73,12 @@ h1, h2, h3, p { margin: 0; }
 /* Header */
 .top { padding: 4px 0 14px; }
 .top h1 { font-size: 28px; font-weight: 700; letter-spacing: -.02em; }
+/* A page opened from Setup: Back at the top left, then its title. */
+.sub-top { display: flex; align-items: center; gap: 10px; }
+.sub-top h1 { font-size: 22px; flex: 1; min-width: 0; }
+.sub-top .x { font-size: 24px; line-height: 1; padding-bottom: 3px; }
+.row.go { align-items: center; }
+.chev { color: var(--muted); font-size: 22px; line-height: 1; }
 .budget-switch {
   display: inline-flex; align-items: center; gap: 6px;
   background: none; border: 0; padding: 0;
@@ -200,10 +206,13 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px s
 .fab:active { transform: scale(.96); }
 
 /* Bottom sheet */
-.backdrop { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .45); }
+/* While a pop-up is open the page behind it stays still: it cannot be scrolled by dragging the dimmed area,
+   and scrolling to the end of the pop-up does not carry on into the page. */
+html:has(#sheet-root > *), html:has(#sheet-root > *) body { overflow: hidden; }
+.backdrop { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .45); touch-action: none; }
 .sheet {
   position: fixed; z-index: 21; left: 0; right: 0; bottom: 0;
-  max-width: 560px; margin: 0 auto; max-height: 92dvh; overflow-y: auto;
+  max-width: 560px; margin: 0 auto; max-height: 92dvh; overflow-y: auto; overscroll-behavior: contain;
   background: var(--surface); border-radius: 20px 20px 0 0;
   padding: 10px 16px calc(env(safe-area-inset-bottom) + 20px);
   animation: up .2s ease-out;

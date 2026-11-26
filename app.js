@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '51';
+const APP_VERSION = '54';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -144,7 +144,7 @@ function setLang(next) {
 }
 const langOptions = () => LANGS.map(([id, name]) => `<option value="${id}" ${id === lang ? 'selected' : ''}>${name}</option>`).join('');
 
-// The kinds of reminders, each with its own switch under More.
+// The kinds of reminders, each with its own switch under Setup.
 const NOTIFY_KINDS = [
   ['bills', 'Bills to pay', 'On the day a bill or instalment is due, and again if it is still unpaid 3 days later.'],
   ['weekreport', 'Weekly report', 'On the last evening of each week.'],
@@ -250,9 +250,15 @@ function blankState() {
   return {
     version: 2,
     settings: { currency: guessCurrency(), theme: 'auto', started: false, notify: {} },
-    categories: [], transactions: [], recurring: [], emis: [], plans: [], debts: []
+    categories: [], transactions: [], recurring: [], emis: [], plans: [], debts: [],
+    // The reminders already read. Kept with the data, so one read on any device is read on all of them.
+    seen: []
   };
 }
+
+// Two lists of read reminders as one, newest last. Only the latest few hundred are kept.
+const mergeSeen = (a, b) => [...new Set([...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])]
+  .filter((x) => typeof x === 'string' && x && x.length <= 120))].slice(-300);
 
 const validState = (s) => s && typeof s === 'object' && s.version === 2 && s.settings && typeof s.settings === 'object' && Array.isArray(s.transactions);
 
@@ -276,6 +282,7 @@ function sanitize(s) {
   // Which kinds of reminders are switched off. Anything not listed is on.
   const off = s.settings.notify && typeof s.settings.notify === 'object' ? s.settings.notify : {};
   for (const [kind] of NOTIFY_KINDS) if (off[kind] === false) out.settings.notify[kind] = false;
+  out.seen = mergeSeen(s.seen, []);
   out.categories = arr(s.categories).map((c) => ({
     id: c.id, type: type(c.type), group: c.group === 'secondary' ? 'secondary' : 'primary',
     name: str(c.name, 40) || 'Category', emoji: str(c.emoji, 8), budget: pos(c.budget),
@@ -371,7 +378,9 @@ let state = load();
 const ui = {
   tab: 'home', home: 'month', saveYear: curYM().slice(0, 4), month: curYM(), filter: 'all', search: '', bar: null, bills: 'month', horizon: 12,
   rep: { period: 'month', cursor: today(), measure: 'expense' },
-  planner: 'plans'
+  planner: 'plans',
+  // Which list under Setup is open on its own page, if any.
+  setup: null
 };
 let pendingConfirm = null;
 
@@ -427,6 +436,17 @@ let changeSeq = 0;
 let pushTimer = null;
 let syncing = null;
 let pendingRemote = null;
+
+// Read reminders used to be remembered on each device only. Move that list into the data, so it reaches the account.
+try {
+  const old = JSON.parse(localStorage.getItem('budgetnest.seen'));
+  if (Array.isArray(old)) {
+    state.seen = mergeSeen(state.seen, old);
+    localStorage.setItem(KEY, JSON.stringify(state));
+    localStorage.removeItem('budgetnest.seen');
+    if (sync.session) { sync.dirty = true; saveSync(); }
+  }
+} catch (e) { /* nothing to move */ }
 
 async function sb(path, { method = 'GET', body, token, prefer } = {}) {
   const headers = { apikey: SB_KEY, 'Content-Type': 'application/json' };
@@ -523,7 +543,7 @@ function signOutNow() {
   dropSession();
   try { localStorage.removeItem(SYNC_KEY); } catch (e) { /* ignore */ }
   resetState();
-  Object.assign(ui, { tab: 'home', home: 'month', month: curYM(), filter: 'all', search: '', bar: null, bills: 'month', planner: 'plans' });
+  Object.assign(ui, { tab: 'home', home: 'month', month: curYM(), filter: 'all', search: '', bar: null, bills: 'month', planner: 'plans', setup: null });
   lastTabIndex = null;
   render(); window.scrollTo(0, 0); toast('Signed out');
 }
@@ -589,12 +609,16 @@ function mergeStates(local, remote) {
       out[k].push(x);
     }
   }
+  out.seen = mergeSeen(other.seen, out.seen);
   out.settings.started = true;
   return out;
 }
 
 function adopt(remote) {
+  const seen = state.seen;
   state = sanitize(remote);
+  // A reminder read on this device stays read, also if the account's copy does not know about it.
+  state.seen = mergeSeen(state.seen, seen);
   state.settings.started = true;
   if (!state.categories.length) state.categories = defaultCategories();
   fmtCache = {};
@@ -962,7 +986,6 @@ const debtTotal = (kind) => sum(state.debts.filter((d) => d.kind === kind), debt
 // Everything FETA would remind about, worked out from the data: what happened already and what is coming in the next weeks.
 // The bell on Home lists the ones whose time has come. The Android app is handed the whole list and shows each one
 // as a phone notification at its time, also when FETA is closed.
-const SEEN_KEY = 'budgetnest.seen';
 const atHour = (date, hour) => { const d = toDate(date); d.setHours(hour, 0, 0, 0); return d.getTime(); };
 
 function buildNotices() {
@@ -1066,9 +1089,7 @@ function buildNotices() {
 }
 
 const currentNotices = () => { const now = Date.now(); return buildNotices().filter((n) => n.at <= now).reverse(); };
-function seenNotices() {
-  try { const v = JSON.parse(localStorage.getItem(SEEN_KEY)); return new Set(Array.isArray(v) ? v : []); } catch (e) { return new Set(); }
-}
+const seenNotices = () => new Set(state.seen || []);
 const unreadCount = () => { const seen = seenNotices(); return currentNotices().filter((n) => !seen.has(n.id)).length; };
 
 function noticesSheet() {
@@ -1081,8 +1102,8 @@ function noticesSheet() {
       <span class="row-sub" style="white-space:normal">${esc(n.body)}</span></span></button>`).join('')
       : '<div class="empty">Nothing to tell you right now. Bills that are due, the monthly report, planner reminders and app updates show up here.</div>'}</div>
     <button class="btn ghost" data-act="notice-go" data-id="more">Choose what to be notified about</button>`);
-  // Opening the list counts as having read it.
-  try { localStorage.setItem(SEEN_KEY, JSON.stringify(list.map((n) => n.id))); } catch (e) { /* ignore */ }
+  // Opening the list counts as having read it, on this device and on every other one using the account.
+  if (list.some((n) => !seen.has(n.id))) { state.seen = mergeSeen(state.seen, list.map((n) => n.id)); save(); }
   const bell = $('.bell .badge');
   if (bell) bell.remove();
 }
@@ -1094,6 +1115,8 @@ window.fetaGo = (tab, month) => {
   if (tab === 'update') { ui.tab = 'home'; render(); if (androidUpdate) androidUpdateSheet(); return; }
   if (!['home', 'bills', 'savings', 'reports', 'planner', 'more'].includes(tab)) return;
   ui.tab = tab; ui.bar = null;
+  // The only way here with Setup is the bell's "Choose what to be notified about".
+  ui.setup = tab === 'more' ? 'notify' : null;
   if (tab === 'home') { ui.home = 'month'; if (isYM(month)) ui.month = month; }
   if (tab === 'reports' && isYM(month)) { ui.rep.period = 'month'; ui.rep.cursor = month + '-01'; }
   // A weekly report is opened with the first day of its week.
@@ -1112,13 +1135,15 @@ function queueNotify() {
   clearTimeout(notifyTimer);
   notifyTimer = setTimeout(() => {
     const now = Date.now();
-    const items = buildNotices().filter((n) => !n.inAppOnly && n.at > now - 12 * 36e5).slice(0, 80)
+    const seen = seenNotices();
+    // A reminder already read, here or on another device, is not put on the phone again.
+    const items = buildNotices().filter((n) => !n.inAppOnly && !seen.has(n.id) && n.at > now - 12 * 36e5).slice(0, 80)
       .map((n) => ({ id: n.id, at: n.at, title: tr(n.title), body: tr(n.body), tab: n.tab, month: n.month }));
     try { android.notifySchedule(JSON.stringify(items)); } catch (e) { /* the app is too old for reminders */ }
   }, 900);
 }
 
-function notifyCard() {
+function notifyCard(withHead = true) {
   const off = state.settings.notify || {};
   const st = notifyState();
   const phone = !android || !android.notifySchedule
@@ -1126,7 +1151,7 @@ function notifyCard() {
     : st === 'granted' ? '<p class="note" style="margin:0 0 14px">✓ This phone shows FETA’s notifications, also when the app is closed.</p>'
       : `<p class="note" style="margin:0 0 10px">This phone is not showing FETA’s notifications yet.</p>
         <button class="btn" data-act="notify-ask" style="margin-bottom:14px">Turn on notifications</button>`;
-  return `<div class="sec-head"><h2>Notifications</h2></div>
+  return `${withHead ? '<div class="sec-head"><h2>Notifications</h2></div>' : ''}
     <section class="card">
       ${phone}
       ${NOTIFY_KINDS.map(([kind, label, hint]) => `<label class="check notify-row"><input type="checkbox" data-notify="${kind}" ${off[kind] === false ? '' : 'checked'}>
@@ -1205,7 +1230,7 @@ function render() {
   queueNotify();
   if (!state.settings.started) { app.innerHTML = viewWelcome(); return; }
   const views = { home: viewHome, bills: viewBills, savings: viewSavings, reports: viewReports, planner: viewPlanner, more: viewMore };
-  const tabs = [['home', 'Home'], ['bills', 'Bills'], ['savings', 'Savings'], ['reports', 'Reports'], ['planner', 'Planner'], ['more', 'More']];
+  const tabs = [['home', 'Home'], ['bills', 'Bills'], ['savings', 'Savings'], ['reports', 'Reports'], ['planner', 'Planner'], ['more', 'Setup']];
   const overdue = dueItems(curYM()).filter((it) => dueStatus(it) === 'unpaid').length;
   // When the tab changes, the glass capsule slides from the old tab to the new one and the page slides in from that side.
   const index = tabs.findIndex(([id]) => id === ui.tab);
@@ -2006,16 +2031,38 @@ function viewPlanner() {
     ${body}`;
 }
 
-/* ---------- More: categories, settings, data ---------- */
+/* ---------- Setup: account, categories, settings, data ---------- */
 
-function viewMore() {
-  const th = state.settings.theme;
-  const catList = (title, list, type, group) => `<div class="sec-head"><h2>${title}</h2><button class="link" data-act="add-cat" data-type="${type}" data-group="${group || ''}">+ Add</button></div>
+// The lists under Setup. Each one is a row on the Setup screen and opens on a page of its own.
+const SETUP_LISTS = [
+  ['income-primary', 'Primary income sources', '💼', 'income', 'primary'],
+  ['income-secondary', 'Secondary income sources', '💵', 'income', 'secondary'],
+  ['expense', 'Expense categories', '🛒', 'expense', ''],
+  ['saving', 'Savings categories', '🏦', 'saving', ''],
+  ['notify', 'Notifications', '🔔', '', '']
+];
+const setupCats = (type, group) => catsOf(type).filter((c) => !group || c.group === group);
+
+// One list from Setup on its own page, with a Back button at the top left.
+function viewSetupList([id, title, , type, group]) {
+  const head = (extra) => `<header class="top sub-top"><button class="x" data-act="setup-back" aria-label="Back">‹</button><h1>${title}</h1>${extra}</header>`;
+  if (id === 'notify') return head('') + notifyCard(false);
+  const list = setupCats(type, group);
+  return `${head(`<button class="link" data-act="add-cat" data-type="${type}" data-group="${group}">+ Add</button>`)}
     <div class="list">${list.length ? list.map((c) => `<button class="row" data-act="edit-cat" data-id="${c.id}">
       <span class="emoji" aria-hidden="true">${esc(c.emoji || '•')}</span>
       <span class="row-main"><span class="row-top"><span class="name">${esc(c.name)}</span>${c.budget ? `<span class="row-sub">limit ${fmt(c.budget)}/month</span>` : c.opening || c.target ? `<span class="row-sub">${[c.opening ? `already had ${fmt(c.opening)}` : '', c.target ? `target ${fmt(c.target)}` : ''].filter(Boolean).join(' · ')}</span>` : ''}</span></span></button>`).join('')
       : '<div class="empty">None yet.</div>'}</div>`;
-  const inc = catsOf('income');
+}
+
+function viewMore() {
+  const open = SETUP_LISTS.find((x) => x[0] === ui.setup);
+  if (open) return viewSetupList(open);
+  const th = state.settings.theme;
+  const lists = `<div class="list" style="margin-top:16px">${SETUP_LISTS.map(([id, title, emoji, type, group]) => `<button class="row go" data-act="setup-open" data-id="${id}">
+      <span class="emoji" aria-hidden="true">${emoji}</span>
+      <span class="row-main"><span class="row-top"><span class="name" style="white-space:normal">${title}</span>${type ? `<span class="row-sub">${setupCats(type, group).length}</span>` : ''}</span></span>
+      <span class="chev" aria-hidden="true">›</span></button>`).join('')}</div>`;
   const account = sync.session
     ? `<section class="card">
         <div class="label">Signed in as</div>
@@ -2029,15 +2076,10 @@ function viewMore() {
         <button class="btn" data-act="open-account" data-id="signup">Create an account</button>
         <button class="btn ghost" data-act="open-account" data-id="signin">Sign in</button>
       </section>`;
-  return `<header class="top"><h1>More</h1></header>
+  return `<header class="top"><h1>Setup</h1></header>
     <div class="sec-head" style="margin-top:0"><h2>Account</h2></div>
     ${account}
-    ${catList('Primary income sources', inc.filter((c) => c.group === 'primary'), 'income', 'primary')}
-    ${catList('Secondary income sources', inc.filter((c) => c.group === 'secondary'), 'income', 'secondary')}
-    ${catList('Expense categories', catsOf('expense'), 'expense')}
-    ${catList('Savings categories', catsOf('saving'), 'saving')}
-
-    ${notifyCard()}
+    ${lists}
     ${locationCard()}
     <div class="sec-head"><h2>Settings</h2></div>
     <section class="card">
@@ -2589,7 +2631,9 @@ const find = (list, el) => list.find((x) => x.id === el.dataset.id);
 const remove = (key, id) => { state[key] = state[key].filter((x) => x.id !== id); };
 
 const actions = {
-  'tab': (el) => { ui.tab = el.dataset.id; ui.bar = null; render(); window.scrollTo(0, 0); },
+  'tab': (el) => { ui.tab = el.dataset.id; ui.bar = null; ui.setup = null; render(); window.scrollTo(0, 0); },
+  'setup-open': (el) => { ui.setup = el.dataset.id; render(); window.scrollTo(0, 0); },
+  'setup-back': () => { ui.setup = null; render(); window.scrollTo(0, 0); },
   // Using the app without an account is switched off: the welcome screen no longer offers it. The action is kept for the tests.
   'start': () => { startApp(); save(); render(); },
   'welcome-points': () => welcomePointsSheet(),
@@ -2892,6 +2936,7 @@ document.addEventListener('keydown', (e) => {
 // Called by the Android app when the phone's Back button is pressed. Returns true if FETA used it.
 window.fetaBack = () => {
   if ($('#sheet-root').firstChild) { closeSheet(); return true; }
+  if (state.settings.started && ui.tab === 'more' && ui.setup) { ui.setup = null; render(); window.scrollTo(0, 0); return true; }
   if (state.settings.started && ui.tab !== 'home') { ui.tab = 'home'; ui.bar = null; render(); window.scrollTo(0, 0); return true; }
   return false;
 };
