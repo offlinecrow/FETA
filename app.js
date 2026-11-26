@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '54';
+const APP_VERSION = '55';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -2928,6 +2928,24 @@ document.addEventListener('input', (e) => {
   ui.search = e.target.value;
   $('#tx-list').innerHTML = homeListHtml();
 });
+
+// While a pop-up is open, a finger drag must not move the page behind it. iPhones ignore the page being marked
+// as not scrollable, so the drag itself is refused unless it scrolls the pop-up, and the pop-up has room left to scroll.
+let dragY = 0;
+document.addEventListener('touchstart', (e) => { if (e.touches.length === 1) dragY = e.touches[0].clientY; }, { passive: true });
+document.addEventListener('touchmove', (e) => {
+  const root = $('#sheet-root');
+  if (!root.firstChild || !e.cancelable) return;
+  const dy = e.touches[0].clientY - dragY;
+  for (let el = e.target; el && el !== root && el.nodeType === 1; el = el.parentElement) {
+    if (el.scrollHeight <= el.clientHeight + 1 || !/auto|scroll/.test(getComputedStyle(el).overflowY)) continue;
+    const atTop = el.scrollTop <= 0;
+    const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+    if (root.contains(el) && !((dy > 0 && atTop) || (dy < 0 && atEnd))) return;
+    break;
+  }
+  e.preventDefault();
+}, { passive: false });
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && $('#sheet-root').firstChild) closeSheet();
