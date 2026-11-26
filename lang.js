@@ -502,8 +502,6 @@ const WORDS = {
   "I paid all of it back": ["मैंने पूरा चुका दिया", "আমি পুরোটা শোধ করেছি"],
 
   // Spending limits on Reports
-  "No limit set": ["कोई सीमा तय नहीं", "কোনো সীমা ঠিক করা নেই"],
-  "No limit set. Tap to set one.": ["कोई सीमा तय नहीं। तय करने के लिए टैप करें।", "কোনো সীমা ঠিক করা নেই। ঠিক করতে ট্যাপ করুন।"],
 
   // Saving up for a plan
   "Add savings for this plan": ["इस योजना के लिए बचत जोड़ें", "এই পরিকল্পনার জন্য সঞ্চয় যোগ করুন"],

@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '71';
+const APP_VERSION = '72';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -2023,8 +2023,8 @@ function rankRows(list, measure, period) {
   }).join('')}</div>`;
 }
 
-// Every expense category with a bar showing how much of its monthly limit is used: green when little is spent,
-// turning red as it fills. A category with no limit is listed too, so one can be set from here. Limits are per month,
+// The expense categories that have a monthly limit, each with a bar showing how much of it is used: green when little
+// is spent, turning red as it fills. Categories with no limit are not listed. Limits are per month,
 // so a day or week report shows the month it falls in, and a year report compares the year with twelve times the limit.
 function limitsSection(period, prefix, from) {
   const year = period === 'year';
@@ -2033,17 +2033,16 @@ function limitsSection(period, prefix, from) {
   for (const t of state.transactions) if (t.type === 'expense' && t.date.startsWith(scope)) spent[t.categoryId] = r3((spent[t.categoryId] || 0) + t.amount);
   const guest = isGuest();
   const rows = catsOf('expense').map((c) => ({ c, used: spent[c.id] || 0, limit: c.budget > 0 ? c.budget * (year ? 12 : 1) : 0 }))
-    .filter((x) => x.limit > 0 || !guest)
-    .sort((a, b) => (b.limit > 0) - (a.limit > 0) || (b.limit ? b.used / b.limit - a.used / a.limit : b.used - a.used));
+    .filter((x) => x.limit > 0)
+    .sort((a, b) => b.used / b.limit - a.used / a.limit);
   if (!rows.length) return '';
   const row = ({ c, used, limit }) => {
-    const share = limit > 0 ? used / limit : 0;
+    const share = used / limit;
     const fill = Math.min(1, share);
-    const sub = !limit ? (guest ? 'No limit set' : 'No limit set. Tap to set one.')
-      : used > limit ? `<span class="over">⚠ Over the limit by ${fmt(r3(used - limit))}</span>` : `${fmt(r3(limit - used))} left · ${Math.round(share * 100)}% used`;
+    const sub = used > limit ? `<span class="over">⚠ Over the limit by ${fmt(r3(used - limit))}</span>` : `${fmt(r3(limit - used))} left · ${Math.round(share * 100)}% used`;
     const inner = `<span class="emoji" aria-hidden="true">${esc(c.emoji || '•')}</span>
-      <span class="row-main"><span class="row-top"><span class="name">${esc(c.name)}</span><span class="amt">${fmt(used)}${limit ? `<span class="of"> / ${fmt(limit)}</span>` : ''}</span></span>
-      ${limit ? `<span class="meter" role="img" aria-label="${Math.round(share * 100)}% of the limit used"><span style="width:${fill * 100}%;background:hsl(${Math.round(130 * (1 - fill))} 68% 44%)"></span></span>` : ''}
+      <span class="row-main"><span class="row-top"><span class="name">${esc(c.name)}</span><span class="amt">${fmt(used)}<span class="of"> / ${fmt(limit)}</span></span></span>
+      <span class="meter" role="img" aria-label="${Math.round(share * 100)}% of the limit used"><span style="width:${fill * 100}%;background:hsl(${Math.round(130 * (1 - fill))} 68% 44%)"></span></span>
       <span class="row-sub" style="white-space:normal">${sub}</span></span>`;
     return guest ? `<div class="row limit-row">${inner}</div>` : `<button class="row limit-row" data-act="edit-cat" data-id="${c.id}">${inner}</button>`;
   };
