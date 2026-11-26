@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '64';
+const APP_VERSION = '68';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -154,9 +154,10 @@ const NOTIFY_KINDS = [
   ['debts', 'Money owed', 'On the due date of money you owe or are owed.'],
   ['goals', 'Savings targets', 'When savings reach the target you set.'],
   ['updates', 'App updates', 'Once a week while a newer Android app is waiting.'],
-  ['comments', 'Comments', 'When someone writes a comment or a reply on a transaction.']
+  ['comments', 'Comments', 'When someone writes a comment or a reply on a transaction.'],
+  ['leftover', 'Money left over', 'On the first day of a month, when the month before ended with money left.']
 ];
-const NOTIFY_EMOJI = { bills: '🧾', report: '📊', plans: '🎯', budget: '⚠️', debts: '🤝', goals: '🏆', updates: '⬇️', comments: '💬' };
+const NOTIFY_EMOJI = { bills: '🧾', report: '📊', plans: '🎯', budget: '⚠️', debts: '🤝', goals: '🏆', updates: '⬇️', comments: '💬', invites: '✉️', leftover: '💵' };
 
 const DEFAULT_CATEGORIES = [
   ['income', 'primary', 'Job salary', '💼'], ['income', 'primary', 'Business profit', '🏪'], ['income', 'primary', 'Rent received', '🏘️'],
@@ -253,7 +254,9 @@ function blankState() {
     settings: { currency: guessCurrency(), theme: 'auto', started: false, notify: {} },
     categories: [], transactions: [], recurring: [], emis: [], plans: [], debts: [],
     // The reminders already read. Kept with the data, so one read on any device is read on all of them.
-    seen: []
+    seen: [],
+    // What the person chose to do with the money left at the end of a month: 'carry', 'expense' or 'saving', by month.
+    leftover: {}
   };
 }
 
@@ -284,6 +287,11 @@ function sanitize(s) {
   const off = s.settings.notify && typeof s.settings.notify === 'object' ? s.settings.notify : {};
   for (const [kind] of NOTIFY_KINDS) if (off[kind] === false) out.settings.notify[kind] = false;
   out.seen = mergeSeen(s.seen, []);
+  // Money left at the end of a month is carried into the next one, starting with this month. Earlier months are left as they were.
+  if (isYM(s.settings.carryFrom)) out.settings.carryFrom = s.settings.carryFrom;
+  if (s.leftover && typeof s.leftover === 'object') {
+    for (const [ym, how] of Object.entries(s.leftover)) if (isYM(ym) && ['carry', 'expense', 'saving'].includes(how)) out.leftover[ym] = how;
+  }
   out.categories = arr(s.categories).map((c) => ({
     id: c.id, type: type(c.type), group: c.group === 'secondary' ? 'secondary' : 'primary',
     name: str(c.name, 40) || 'Category', emoji: str(c.emoji, 8), budget: pos(c.budget),
@@ -683,13 +691,18 @@ function mergeStates(local, remote) {
     }
   }
   out.seen = mergeSeen(other.seen, out.seen);
+  out.leftover = { ...other.leftover, ...out.leftover };
+  if (!out.settings.carryFrom && other.settings.carryFrom) out.settings.carryFrom = other.settings.carryFrom;
   out.settings.started = true;
   return out;
 }
 
 function adopt(remote) {
   const seen = state.seen;
+  const carryFrom = state.settings.carryFrom;
   state = sanitize(remote);
+  // A copy saved by an older version of the app does not say when carrying over started: keep what this device knows.
+  if (!state.settings.carryFrom && carryFrom) state.settings.carryFrom = carryFrom;
   // A reminder read on this device stays read, also if the account's copy does not know about it.
   state.seen = mergeSeen(state.seen, seen);
   state.settings.started = true;
@@ -703,6 +716,7 @@ function showState(data) {
   state = sanitize(data);
   state.settings.started = true;
   if (!isGuest() && !state.categories.length) state.categories = defaultCategories();
+  if (!isGuest() && !state.settings.carryFrom) { state.settings.carryFrom = curYM(); sync.dirty = true; }
   fmtCache = {};
   saveLocal(); applyTheme(); render();
 }
@@ -768,6 +782,7 @@ function syncStatus() {
 
 function startApp() {
   state.settings.started = true;
+  if (!state.settings.carryFrom) state.settings.carryFrom = curYM();
   if (!state.categories.length) state.categories = defaultCategories();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 }
@@ -1022,6 +1037,30 @@ function totalsOf(list) {
 }
 const txInMonth = (ym) => state.transactions.filter((t) => t.date.startsWith(ym));
 
+// Money left at the end of a month is carried into the next one, until the person decides otherwise (see leftoverSheet).
+// This is the amount a month starts with: what the months before it left, counted from the month carrying over began.
+// A month that ended short carries nothing. A month that has not come yet shows nothing, as the one before it is not over.
+function carryInto(ym) {
+  const from = state.settings.carryFrom;
+  if (!isYM(from) || !isYM(ym) || ym <= from || ym > curYM()) return 0;
+  const sums = {};
+  for (const t of state.transactions) {
+    const m = t.date.slice(0, 7);
+    if (m >= from && m < ym) sums[m] = (sums[m] || 0) + (t.type === 'income' ? t.amount : -t.amount);
+  }
+  let carry = 0;
+  for (let m = from; m < ym; m = addMonths(m, 1)) carry = Math.max(0, r3(carry + (sums[m] || 0)));
+  return carry;
+}
+const monthName = (ym) => monthNameOf(Number(ym.slice(5, 7)));
+// The month whose leftover still waits for a decision: the one before this month, if it ended with money left.
+function leftoverWaiting() {
+  if (isGuest()) return null;
+  const ym = addMonths(curYM(), -1);
+  const amount = carryInto(curYM());
+  return amount > 0 && !(state.leftover || {})[ym] ? { ym, amount } : null;
+}
+
 // An EMI runs for `tenure` months from `start`. Each month is one instalment, paid or still open.
 function emiStats(e) {
   const pays = state.transactions.filter((t) => t.emiId === e.id);
@@ -1216,6 +1255,26 @@ function buildNotices() {
     }
   }
 
+  if (want('leftover')) {
+    const waiting = leftoverWaiting();
+    const text = 'It is carried over to this month for now. Tap to choose what to do with it.';
+    if (waiting) add('leftover', `leftover:${waiting.ym}`, atHour(ymNow + '-01', 9), `${fmt(waiting.amount)} was left from ${monthName(waiting.ym)}`, text, 'leftover', waiting.ym);
+    // The same question for this month, for the phone to ask on the first day of the next one.
+    const next = addMonths(ymNow, 1);
+    if (isYM(state.settings.carryFrom) && ymNow >= state.settings.carryFrom && !(state.leftover || {})[ymNow]) {
+      add('leftover', `leftover:${ymNow}`, atHour(next + '-01', 9), `Money was left from ${monthName(ymNow)}`, text, 'leftover', ymNow);
+    }
+  }
+
+  // An invitation to someone else's profile, until it is accepted or declined. It is also marked on Setup, where it is answered.
+  if (sync.session) {
+    for (const g of share.invites) {
+      const who = person(g.owner_id).name || g.owner_email || 'Someone';
+      add('invites', `invite:${g.id}`, Math.min(Date.parse(g.created_at) || now, now), `${who} invited you to their profile`,
+        g.role === 'add' ? 'Invites you to see the reports and add expenses.' : 'Invites you to see the reports.', 'profile');
+    }
+  }
+
   // Nothing older than five weeks, nothing further ahead than six.
   return list.filter((n) => n.at > now - 35 * 864e5 && n.at < now + 42 * 864e5).sort((a, b) => a.at - b.at);
 }
@@ -1259,6 +1318,16 @@ window.fetaGo = (tab, month, tx) => {
   if (!state.settings.started) return;
   closeSheet();
   if (tab === 'update') { ui.tab = 'home'; render(); if (androidUpdate) androidUpdateSheet(); return; }
+  // Money left from last month: open Home on this month with the question.
+  if (tab === 'leftover') {
+    if (isGuest()) return;
+    ui.tab = 'home'; ui.home = 'month'; ui.month = curYM(); ui.page = null; ui.bar = null;
+    render(); window.scrollTo(0, 0);
+    if (isYM(month)) leftoverSheet(month);
+    return;
+  }
+  // An invitation is answered on the profile page under Setup.
+  if (tab === 'profile') { profileSheet(); window.scrollTo(0, 0); return; }
   if (!['home', 'bills', 'savings', 'reports', 'planner', 'more'].includes(tab)) return;
   if (isGuest() && tab !== 'home' && tab !== 'reports') return;
   ui.tab = tab; ui.bar = null; ui.page = null;
@@ -1619,7 +1688,12 @@ function viewHome() {
   const openOut = sum(open.filter((it) => it.type !== 'income'), (it) => it.amount);
   const openIn = sum(open.filter((it) => it.type === 'income'), (it) => it.amount);
   const isNow = ym === curYM();
-  const after = r3(t.balance - openOut);
+  // What last month left is part of what there is to spend this month.
+  const carry = carryInto(ym);
+  const before = addMonths(ym, -1);
+  const left = r3(t.balance + carry);
+  const decided = !!(state.leftover || {})[before];
+  const after = r3(left - openOut);
   const daysLeft = daysInMonth(ym) - Number(today().slice(8, 10)) + 1;
   const recv = debtTotal('receivable');
   const pay = debtTotal('payable');
@@ -1647,15 +1721,19 @@ function viewHome() {
     <section class="card">
       <div class="hero-row"><div class="hero-main">
       <div class="label">Left this month</div>
-      <div class="hero-num ${t.balance < 0 ? 'neg' : ''}">${fmt(t.balance)}</div>
-      <div class="sub">Income minus expenses and savings</div>
+      <div class="hero-num ${left < 0 ? 'neg' : ''}">${fmt(left)}</div>
+      <div class="sub">${carry ? `Income minus expenses and savings, plus ${fmt(carry)} carried over from ${monthName(before)}` : 'Income minus expenses and savings'}</div>
       </div>${spendRing(t.income, t.expense)}</div>
       <div class="kpis three" style="margin-top:14px">
-        <div class="kpi"><div class="label">Income</div><div class="v">${fmt(t.income)}</div></div>
+        <div class="kpi"><div class="label">Income</div><div class="v">${fmt(t.income)}</div>${carry ? `<div class="s">+ ${fmt(carry)} carried over</div>` : ''}</div>
         <div class="kpi"><div class="label">Expenses</div><div class="v">${fmt(t.expense)}</div></div>
         <div class="kpi"><div class="label">Savings</div><div class="v">${fmt(t.saving)}</div></div>
       </div>
+      ${carry && decided && !isGuest() ? `<button class="link" style="margin-top:8px" data-act="leftover-open" data-id="${before}">Change what happens to the carried-over money</button>` : ''}
     </section>
+    ${carry && !decided && !isGuest() ? `<button class="card tap" data-act="leftover-open" data-id="${before}">
+      <div class="name" style="white-space:normal">${fmt(carry)} was left from ${monthName(before)}</div>
+      <div class="sub">It is carried over to this month for now. Tap to choose what to do with it.</div></button>` : ''}
     ${isGuest() ? '' : toPay}
     ${!isGuest() && (recv || pay) ? `<button class="card tap" data-act="open-owed">
       <div class="kpis" style="margin:0;padding:0;border:0">
@@ -1898,6 +1976,9 @@ function viewReports() {
   const t = totalsOf(list);
   const mlist = list.filter((x) => x.type === measure);
   const rate = t.income > 0 ? Math.round((t.saving / t.income) * 100) : 0;
+  // A month's report says what was carried over into it; that is part of what is left, not of the income earned.
+  const carry = period === 'month' ? carryInto(prefix) : 0;
+  const carried = carry ? `Carried over from ${monthName(addMonths(prefix, -1))}` : '';
 
   let buckets = [];
   if (period === 'week') {
@@ -1943,8 +2024,9 @@ function viewReports() {
         <div class="kpi"><div class="label">Income</div><div class="v">${fmt(t.income)}</div></div>
         <div class="kpi"><div class="label">Expenses</div><div class="v">${fmt(t.expense)}</div></div>
         <div class="kpi"><div class="label">Savings</div><div class="v">${fmt(t.saving)}</div>${rate ? `<div class="s">${rate}% of income</div>` : ''}</div>
-        <div class="kpi"><div class="label">Left</div><div class="v ${t.balance < 0 ? 'over' : ''}">${fmt(t.balance)}</div></div>
+        <div class="kpi"><div class="label">Left</div><div class="v ${t.balance + carry < 0 ? 'over' : ''}">${fmt(r3(t.balance + carry))}</div></div>
       </div>
+      ${carry ? `<p class="note" style="margin:12px 0 0">Left includes ${fmt(carry)} carried over from ${monthName(addMonths(prefix, -1))}.</p>` : ''}
     </section>
     <div class="two" style="margin-bottom:14px">
       <button class="btn ghost" data-act="rep-share">Share report</button>
@@ -1963,6 +2045,7 @@ function viewReports() {
     </section>` : ''}
     <section class="card">
       <div class="sec-head" style="margin-top:0"><h2>${TYPE_PLURAL[measure]} by category</h2></div>
+      ${measure === 'income' && carry ? `<div class="row-top" style="margin-bottom:14px"><span class="name">${carried}</span><span class="amt inc">+${fmt(carry)}</span></div>` : ''}
       ${split}${rankRows(mlist, measure, period)}
     </section>
     ${yearTable}
@@ -2013,7 +2096,8 @@ function reportCanvases(scope) {
   put(scope.label, PDF_M, y + 36, { size: 38, weight: 700 });
   y += 60; box(PDF_M, y, width, 3, '#2f7183'); y += 30;
 
-  const kpis = [['Income', t.income], ['Expenses', t.expense], ['Savings', t.saving], ['Left', t.balance]];
+  const carry = scope.period === 'month' ? carryInto(scope.prefix) : 0;
+  const kpis = [['Income', t.income], ['Expenses', t.expense], ['Savings', t.saving], ['Left', r3(t.balance + carry)]];
   const bw = (width - 60) / 4;
   kpis.forEach(([label, v], i) => {
     const x = PDF_M + i * (bw + 20);
@@ -2022,6 +2106,7 @@ function reportCanvases(scope) {
     put(fmt(v), x + 18, y + 98, { size: 32, weight: 700, color: label === 'Left' && v < 0 ? '#b3261e' : '#16181a', max: bw - 36 });
   });
   y += 150;
+  if (carry) { put(tr(`Left includes ${fmt(carry)} carried over from ${monthName(addMonths(scope.prefix, -1))}.`), PDF_M, y + 12, { size: 22, color: grey, max: width }); y += 44; }
 
   for (const type of ['expense', 'income', 'saving']) {
     const sums = {};
@@ -2351,6 +2436,25 @@ function txSheet(tx, preset = {}) {
     </form>${commentsBlock(tx)}`);
 }
 
+// Asks what to do with the money a month ended with. Until this is answered, it is carried over to the next month.
+function leftoverSheet(ym) {
+  const next = addMonths(ym, 1);
+  const amount = carryInto(next);
+  if (isGuest() || !(amount > 0)) return closeSheet();
+  const funds = catsOf('saving');
+  openSheet(`Left from ${monthName(ym)}`, `
+    <p>${ymLabel(ym)} ended with ${fmt(amount)} left. What do you want to do with it?</p>
+    <button class="btn" data-act="leftover-do" data-id="${ym}" data-how="carry">Carry it over to ${monthName(next)}</button>
+    <button class="btn ghost" data-act="leftover-do" data-id="${ym}" data-how="expense">Count it as an “Others” expense</button>
+    ${funds.length ? `<div class="field" style="margin:16px 0 0"><span>Or put it in a savings fund</span><select name="leftoverFund">${funds.map((c) => `<option value="${c.id}">${esc(catLabel(c))}</option>`).join('')}</select></div>
+    <button class="btn ghost" data-act="leftover-do" data-id="${ym}" data-how="saving">Add it to savings</button>` : ''}
+    <p class="note" style="margin:14px 0 0">An expense or savings entry is dated the last day of ${monthName(ym)}, so that month ends at zero.</p>`);
+}
+
+// The category that takes over what was in a deleted one: "Other", "Others", "Other income"... of the same kind.
+const isOthers = (c) => /^others?( income| savings)?$/i.test(String(c.name).trim());
+
+// Categories are added, changed and deleted under Setup. Elsewhere this form opens without the Delete button.
 function catSheet(c, type, group) {
   const kind = c ? c.type : type;
   const title = { expense: 'expense category', income: 'income source', saving: 'savings category' }[kind];
@@ -2372,7 +2476,8 @@ function catSheet(c, type, group) {
       ${kind === 'saving' ? `<label class="field"><span>Target amount (optional)</span>
         <input type="text" inputmode="decimal" name="target" placeholder="No target" autocomplete="off" value="${c && c.target ? c.target : ''}"></label>` : ''}
       <button class="btn">${c ? 'Save changes' : 'Add'}</button>
-      ${c ? `<button type="button" class="btn danger" data-act="del-cat" data-id="${c.id}">Delete</button>` : ''}
+      ${!c || ui.tab !== 'more' ? '' : isOthers(c) ? '<p class="note" style="margin:14px 0 0">What was in a deleted category is kept here, so this one cannot be deleted.</p>'
+        : `<button type="button" class="btn danger" data-act="del-cat" data-id="${c.id}">Delete</button>`}
     </form>`);
 }
 
@@ -3057,6 +3162,7 @@ async function submitProfileName(f) {
     const data = blankState();
     data.settings.currency = state.settings.currency; data.settings.theme = state.settings.theme; data.settings.started = true;
     data.categories = defaultCategories();
+    data.settings.carryFrom = curYM();
     const rows = await api('/rest/v1/profiles', { method: 'POST', prefer: 'return=representation', body: { owner_id: myId(), name, is_main: false, data, rev: 1 } });
     const made = first(rows);
     if (!made) throw new Error('The profile could not be created.');
@@ -3486,11 +3592,47 @@ const actions = {
 
   'add-cat': (el) => catSheet(null, el.dataset.type, el.dataset.group),
   'edit-cat': (el) => { const c = cat(el.dataset.id); if (c) catSheet(c); },
+  'leftover-open': (el) => { if (isYM(el.dataset.id)) leftoverSheet(el.dataset.id); },
+  'leftover-do': (el) => {
+    const ym = el.dataset.id;
+    const how = el.dataset.how;
+    const amount = isYM(ym) ? carryInto(addMonths(ym, 1)) : 0;
+    if (!(amount > 0) || !['carry', 'expense', 'saving'].includes(how)) return closeSheet();
+    const entry = (type, categoryId) => state.transactions.push({ id: uid(), created: Date.now(), type, amount, categoryId, date: dateIn(ym, 31),
+      note: 'Left over at the end of the month', recurringId: '', emiId: '', planId: '', period: '' });
+    if (how === 'expense') {
+      let c = state.categories.find((x) => x.type === 'expense' && isOthers(x));
+      if (!c) { c = { id: uid(), type: 'expense', group: 'primary', name: 'Others', emoji: '📦', budget: 0, opening: 0, target: 0 }; state.categories.push(c); }
+      entry('expense', c.id);
+    } else if (how === 'saving') {
+      const pick = $('#sheet-root [name="leftoverFund"]');
+      const c = pick && cat(pick.value);
+      if (!c || c.type !== 'saving') return;
+      entry('saving', c.id);
+    }
+    if (!state.leftover) state.leftover = {};
+    state.leftover[ym] = how;
+    done();
+    toast(how === 'carry' ? 'Carried over' : how === 'expense' ? 'Added as an expense' : 'Added to savings');
+  },
+  // Deleting a category moves everything recorded in it (transactions, bills, EMIs, money already in a savings fund)
+  // to the "Others" category of the same kind, which is created if there is none yet.
   'del-cat': (el) => {
-    const id = el.dataset.id;
-    const n = state.transactions.filter((t) => t.categoryId === id).length;
-    const go = () => { remove('categories', id); save(); render(); toast('Deleted'); };
-    if (n) confirmSheet('Delete this category?', `Its ${plural(n, 'transaction')} will be kept and shown as “Uncategorised”.`, 'Delete category', go);
+    const c = cat(el.dataset.id);
+    if (!c || isOthers(c)) return;
+    const lists = ['transactions', 'recurring', 'emis'];
+    const n = sum(lists, (k) => state[k].filter((x) => x.categoryId === c.id).length);
+    const kept = state.categories.find((x) => x.id !== c.id && x.type === c.type && isOthers(x));
+    const go = () => {
+      if (n || c.opening) {
+        let to = kept;
+        if (!to) { to = { id: uid(), type: c.type, group: c.type === 'income' ? 'secondary' : 'primary', name: 'Others', emoji: '📦', budget: 0, opening: 0, target: 0 }; state.categories.push(to); }
+        for (const k of lists) for (const x of state[k]) if (x.categoryId === c.id) x.categoryId = to.id;
+        if (c.opening) to.opening = r3((to.opening || 0) + c.opening);
+      }
+      remove('categories', c.id); save(); render(); toast('Deleted');
+    };
+    if (n || c.opening) confirmSheet('Delete this category?', `Everything recorded in ${c.name} moves to “${kept ? kept.name : 'Others'}”. Nothing is lost.`, 'Delete category', go);
     else { closeSheet(); go(); }
   },
 
@@ -3617,6 +3759,38 @@ document.addEventListener('touchmove', (e) => {
   e.preventDefault();
 }, { passive: false });
 
+// The on-screen keyboard. On an iPhone it slides over the bottom of the screen without making the page any shorter,
+// so a pop-up would sit behind it with its typing fields hidden. While the keyboard is up, the pop-up is lifted to
+// sit on top of it and made no taller than the space that is left, and the field being typed in is scrolled into view.
+const viewport = window.visualViewport;
+function showTyping() {
+  const sheet = $('#sheet-root .sheet');
+  const el = document.activeElement;
+  if (!sheet || !el || !sheet.contains(el) || !el.matches('input, select, textarea')) return;
+  const box = sheet.getBoundingClientRect();
+  const field = el.getBoundingClientRect();
+  // The pop-up's title stays at its top, so a field must clear that too.
+  const head = 64;
+  if (field.bottom > box.bottom - 14) sheet.scrollTop += field.bottom - box.bottom + 14;
+  else if (field.top < box.top + head) sheet.scrollTop -= box.top + head - field.top;
+}
+function fitToKeyboard() {
+  const covered = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
+  const keyboard = covered > 80 ? covered : 0;
+  const root = document.documentElement;
+  root.classList.toggle('kb-open', keyboard > 0);
+  root.style.setProperty('--kb', `${keyboard}px`);
+  root.style.setProperty('--vvh', `${viewport.height}px`);
+  root.style.setProperty('--vvtop', `${viewport.offsetTop}px`);
+  if (keyboard) { showTyping(); requestAnimationFrame(showTyping); }
+}
+if (viewport) {
+  viewport.addEventListener('resize', fitToKeyboard);
+  viewport.addEventListener('scroll', fitToKeyboard);
+}
+// Moving from one field to the next, with the keyboard up or not, keeps the field in view inside the pop-up.
+document.addEventListener('focusin', () => setTimeout(showTyping, 80));
+
 // Pulling the page down from its top syncs with the account, like refreshing in other apps. The page itself comes
 // down with the finger and a round arrow shows in the gap above it; let go once it has come far enough and the page
 // stays down a little while the arrow spins, then goes back up when the sync is done.
@@ -3709,6 +3883,8 @@ window.fetaBack = () => {
   resetState();
   try { localStorage.removeItem(SYNC_KEY); } catch (e) { /* ignore */ }
 })();
+
+if (state.settings.started && !isGuest() && !state.settings.carryFrom) { state.settings.carryFrom = curYM(); save(); }
 
 document.documentElement.lang = lang;
 watchLanguage();

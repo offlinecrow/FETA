@@ -483,6 +483,10 @@ div.row:active { background: none; }
 }
 @keyframes pop { from { transform: translateY(-50%) scale(.96); opacity: 0; } to { transform: translateY(-50%); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .sheet.center { animation: none; } }
+/* While the keyboard is up (see fitToKeyboard in app.js): --kb is the height it covers, --vvh the height still
+   visible and --vvtop how far the visible part has moved down. The pop-up sits on the keyboard and fits above it. */
+.kb-open .sheet { bottom: var(--kb); max-height: calc(var(--vvh) - 10px); padding-bottom: 20px; }
+.kb-open .sheet.center { top: calc(var(--vvtop) + var(--vvh) / 2); bottom: auto; max-height: calc(var(--vvh) - 20px); }
 .welcome .tagline { margin-bottom: 24px; }
 .list + .card, .note + .card { margin-top: 16px; }
 
