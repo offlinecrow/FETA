@@ -4,7 +4,7 @@
 /* ---------- Constants ---------- */
 
 // Change this with every release, together with VERSION in sw.js.
-const APP_VERSION = '55';
+const APP_VERSION = '59';
 const KEY = 'budgetnest.v2';
 const OLD_KEY = 'budgetnest.v1';
 const TYPES = ['expense', 'income', 'saving'];
@@ -153,9 +153,10 @@ const NOTIFY_KINDS = [
   ['budget', 'Spending limits', 'When a category reaches 80% and 100% of its monthly limit.'],
   ['debts', 'Money owed', 'On the due date of money you owe or are owed.'],
   ['goals', 'Savings targets', 'When savings reach the target you set.'],
-  ['updates', 'App updates', 'Once a week while a newer Android app is waiting.']
+  ['updates', 'App updates', 'Once a week while a newer Android app is waiting.'],
+  ['comments', 'Comments', 'When someone writes a comment or a reply on a transaction.']
 ];
-const NOTIFY_EMOJI = { bills: '🧾', report: '📊', plans: '🎯', budget: '⚠️', debts: '🤝', goals: '🏆', updates: '⬇️' };
+const NOTIFY_EMOJI = { bills: '🧾', report: '📊', plans: '🎯', budget: '⚠️', debts: '🤝', goals: '🏆', updates: '⬇️', comments: '💬' };
 
 const DEFAULT_CATEGORIES = [
   ['income', 'primary', 'Job salary', '💼'], ['income', 'primary', 'Business profit', '🏪'], ['income', 'primary', 'Rent received', '🏘️'],
@@ -294,7 +295,9 @@ function sanitize(s) {
   out.transactions = arr(s.transactions).filter((t) => isDate(t.date)).map((t) => ({
     id: t.id, type: type(t.type), amount: Math.abs(num(t.amount)), categoryId: ref(t.categoryId), date: t.date,
     note: str(t.note, 120), created: num(t.created), recurringId: ref(t.recurringId), emiId: ref(t.emiId),
-    planId: ref(t.planId), period: isPeriod(t.period) ? t.period : ''
+    planId: ref(t.planId), period: isPeriod(t.period) ? t.period : '',
+    // Set on an expense a guest added: who it was.
+    ...(okId(t.by) ? { by: t.by, byName: str(t.byName, 40) } : {})
   }));
   out.recurring = arr(s.recurring).map((r) => ({
     id: r.id, type: type(r.type), name: str(r.name, 60) || 'Repeating item', amount: pos(r.amount), categoryId: ref(r.categoryId),
@@ -367,7 +370,7 @@ function saveLocal() {
 function save() {
   saveLocal();
   changeSeq++;
-  if (!sync.session) return;
+  if (!sync.session || isGuest()) return;
   sync.dirty = true;
   saveSync();
   clearTimeout(pushTimer);
@@ -380,7 +383,9 @@ const ui = {
   rep: { period: 'month', cursor: today(), measure: 'expense' },
   planner: 'plans',
   // Which list under Setup is open on its own page, if any.
-  setup: null
+  setup: null,
+  // 'notices' while the full-screen list of notifications is open, and which of them were new when it was opened.
+  page: null, noticeNew: []
 };
 let pendingConfirm = null;
 
@@ -416,10 +421,12 @@ function keepSession() {
 }
 
 function loadSync() {
-  const out = { session: null, rev: 0, dirty: false, last: '', error: '' };
+  // v2: the account's database has profiles, guests and comments. profile: the one on screen (id, kind 'own' or 'guest', ...).
+  const out = { session: null, rev: 0, dirty: false, last: '', error: '', v2: false, profile: null };
   try {
     const s = JSON.parse(localStorage.getItem(SYNC_KEY));
-    if (s && typeof s === 'object') Object.assign(out, { session: s.session || null, rev: Number(s.rev) || 0, dirty: !!s.dirty, last: s.last || '' });
+    if (s && typeof s === 'object') Object.assign(out, { session: s.session || null, rev: Number(s.rev) || 0, dirty: !!s.dirty, last: s.last || '', v2: !!s.v2,
+      profile: s.profile && typeof s.profile === 'object' && typeof s.profile.id === 'string' ? s.profile : null });
   } catch (e) { /* start signed out */ }
   const kept = keptSession();
   const mine = out.session;
@@ -427,7 +434,7 @@ function loadSync() {
   return out;
 }
 function saveSync() {
-  try { localStorage.setItem(SYNC_KEY, JSON.stringify({ session: sync.session, rev: sync.rev, dirty: sync.dirty, last: sync.last })); } catch (e) { /* ignore */ }
+  try { localStorage.setItem(SYNC_KEY, JSON.stringify({ session: sync.session, rev: sync.rev, dirty: sync.dirty, last: sync.last, v2: sync.v2, profile: sync.profile })); } catch (e) { /* ignore */ }
   keepSession();
 }
 
@@ -436,6 +443,32 @@ let changeSeq = 0;
 let pushTimer = null;
 let syncing = null;
 let pendingRemote = null;
+
+const isGuest = () => !!(sync.profile && sync.profile.kind === 'guest');
+const guestCanAdd = () => isGuest() && sync.profile.role === 'add';
+const myId = () => (sync.session ? sync.session.user.id : '');
+const first = (rows) => (rows && rows[0]) || null;
+
+// Profiles, invitations, guests, names and pictures, and comments: see "Profiles, guests and comments" further down.
+const SHARE_KEY = 'budgetnest.share';
+// What a guest has read. A guest cannot save into the profile, so this stays on the device.
+const GSEEN_KEY = 'budgetnest.gseen';
+const blankShare = () => ({ profiles: [], guests: [], guestOf: [], invites: [], people: {}, comments: [] });
+function readShare() {
+  const out = blankShare();
+  try {
+    const v = JSON.parse(localStorage.getItem(SHARE_KEY));
+    if (v && typeof v === 'object') {
+      for (const k of ['profiles', 'guests', 'guestOf', 'invites', 'comments']) if (Array.isArray(v[k])) out[k] = v[k].filter((x) => x && typeof x === 'object');
+      if (v.people && typeof v.people === 'object') out.people = v.people;
+    }
+  } catch (e) { /* start empty */ }
+  return out;
+}
+let share = readShare();
+const saveShare = () => { try { localStorage.setItem(SHARE_KEY, JSON.stringify(share)); } catch (e) { /* ignore */ } };
+// Set while a guest is leaving a profile on purpose, so they are not told they lost access.
+let quietLeave = false;
 
 // Read reminders used to be remembered on each device only. Move that list into the data, so it reaches the account.
 try {
@@ -489,8 +522,11 @@ function setSession(d, user) {
 }
 
 function dropSession() {
-  sync.session = null; sync.rev = 0; sync.dirty = false; sync.last = ''; sync.error = '';
+  sync.session = null; sync.rev = 0; sync.dirty = false; sync.last = ''; sync.error = ''; sync.v2 = false; sync.profile = null;
   pendingRemote = null;
+  sharingAsked = false;
+  share = blankShare();
+  try { localStorage.removeItem(SHARE_KEY); localStorage.removeItem(GSEEN_KEY); } catch (e) { /* ignore */ }
   saveSync();
 }
 
@@ -543,7 +579,7 @@ function signOutNow() {
   dropSession();
   try { localStorage.removeItem(SYNC_KEY); } catch (e) { /* ignore */ }
   resetState();
-  Object.assign(ui, { tab: 'home', home: 'month', month: curYM(), filter: 'all', search: '', bar: null, bills: 'month', planner: 'plans', setup: null });
+  Object.assign(ui, { tab: 'home', home: 'month', month: curYM(), filter: 'all', search: '', bar: null, bills: 'month', planner: 'plans', setup: null, page: null });
   lastTabIndex = null;
   render(); window.scrollTo(0, 0); toast('Signed out');
 }
@@ -555,7 +591,9 @@ async function freshToken() {
     setSession(await sb('/auth/v1/token?grant_type=refresh_token', { method: 'POST', body: { refresh_token: s.refresh_token } }));
   } catch (e) {
     if (e.status === 400 || e.status === 401 || e.status === 403) {
-      setAside(); dropSession();
+      // A guest is looking at someone else's data: that is never set aside as this person's own.
+      if (!isGuest()) setAside();
+      dropSession();
       try { localStorage.removeItem(SYNC_KEY); } catch (err) { /* ignore */ }
       resetState(); closeSheet(); render(); toast('Please sign in again.');
     }
@@ -566,24 +604,59 @@ async function freshToken() {
 
 const hasData = (s) => COLLECTIONS.some((k) => Array.isArray(s[k]) && s[k].length > 0);
 
+// Asks once whether the account's database has profiles, guests and comments (supabase/sharing.sql has been run).
+// Until it has, everything works as before, with one set of data per person.
+let sharingAsked = false;
+async function detectSharing(token) {
+  if (sync.v2 || sharingAsked) return;
+  sharingAsked = true;
+  try {
+    await sb('/rest/v1/profiles?select=id&limit=1', { token });
+    // Revision numbers start again in the new table, so whatever is found there is taken as new.
+    sync.v2 = true; sync.rev = -1;
+    saveSync();
+  } catch (e) { if (e instanceof TypeError) { sharingAsked = false; throw e; } }
+}
+
+// Fetches the profile on screen. Without one yet, that is the person's main profile.
 async function pullRow() {
   const token = await freshToken();
-  const rows = await sb(`/rest/v1/user_data?select=data,rev&user_id=eq.${encodeURIComponent(sync.session.user.id)}`, { token });
-  return (rows && rows[0]) || null;
+  await detectSharing(token);
+  const me = encodeURIComponent(sync.session.user.id);
+  const before = async () => first(await sb(`/rest/v1/user_data?select=data,rev&user_id=eq.${me}`, { token }));
+  if (!sync.v2) return before();
+  const filter = sync.profile ? `id=eq.${encodeURIComponent(sync.profile.id)}` : `owner_id=eq.${me}&is_main=is.true`;
+  const row = first(await sb(`/rest/v1/profiles?select=id,name,data,rev&${filter}`, { token }));
+  if (row) {
+    if (!sync.profile) sync.profile = { id: row.id, kind: 'own', main: true, name: row.name || '' };
+    // The name may have been changed on another device, or by the owner of a profile this person is a guest in.
+    else sync.profile.name = row.name || '';
+    return row;
+  }
+  if (sync.profile) return null;
+  // No main profile yet: this person's data is still where it was kept before profiles existed. It is marked "old"
+  // so that it is taken over and then saved as their main profile.
+  const old = await before();
+  return old ? { ...old, old: true } : null;
 }
 
 // Saves the whole data set as revision baseRev + 1. Returns false if another device saved first.
 async function pushRow(baseRev) {
+  if (isGuest()) return true;
   const token = await freshToken();
   const seq = changeSeq;
   const uid = sync.session.user.id;
   const payload = { data: state, rev: baseRev + 1, updated_at: new Date().toISOString() };
+  const table = sync.v2 ? 'profiles' : 'user_data';
   let rows;
-  if (baseRev === 0) {
-    try { rows = await sb('/rest/v1/user_data', { method: 'POST', token, prefer: 'return=representation', body: { user_id: uid, ...payload } }); }
+  if (baseRev === 0 && !(sync.v2 && sync.profile)) {
+    const owner = sync.v2 ? { owner_id: uid, is_main: true } : { user_id: uid };
+    try { rows = await sb('/rest/v1/' + table, { method: 'POST', token, prefer: 'return=representation', body: { ...owner, ...payload } }); }
     catch (e) { if (e.status === 409) return false; throw e; }
+    if (sync.v2 && rows && rows[0] && rows[0].id) sync.profile = { id: rows[0].id, kind: 'own', main: true, name: '' };
   } else {
-    rows = await sb(`/rest/v1/user_data?user_id=eq.${encodeURIComponent(uid)}&rev=eq.${baseRev}`, { method: 'PATCH', token, prefer: 'return=representation', body: payload });
+    const filter = sync.v2 ? `id=eq.${encodeURIComponent(sync.profile.id)}` : `user_id=eq.${encodeURIComponent(uid)}`;
+    rows = await sb(`/rest/v1/${table}?${filter}&rev=eq.${baseRev}`, { method: 'PATCH', token, prefer: 'return=representation', body: payload });
   }
   if (!rows || !rows.length) return false;
   sync.rev = baseRev + 1;
@@ -625,6 +698,15 @@ function adopt(remote) {
   saveLocal(); applyTheme(); render();
 }
 
+// Puts another profile's data on screen. Nothing from the profile shown before is carried over.
+function showState(data) {
+  state = sanitize(data);
+  state.settings.started = true;
+  if (!isGuest() && !state.categories.length) state.categories = defaultCategories();
+  fmtCache = {};
+  saveLocal(); applyTheme(); render();
+}
+
 function syncNow() {
   if (!sync.session || pendingRemote) return Promise.resolve();
   if (!syncing) {
@@ -636,23 +718,40 @@ function syncNow() {
 async function doSync() {
   clearTimeout(pushTimer);
   try {
+    // Set when the profile on screen had to change, so the data that arrives replaces what is shown instead of being combined with it.
+    let swapped = false;
     for (let attempt = 0; attempt < 3; attempt++) {
       const row = await pullRow();
-      const remoteRev = row ? Number(row.rev) || 0 : 0;
-      if (row && remoteRev !== sync.rev) {
-        // Another device saved since this one last synced.
+      if (!row && sync.profile) {
+        // The profile on screen was deleted, or this guest was removed from it: go back to the person's own main profile.
+        if (!sync.profile.main) {
+          swapped = true; sync.dirty = false;
+          Object.assign(ui, { tab: 'home', home: 'month', month: curYM(), filter: 'all', search: '', bar: null, setup: null, page: null });
+          toast(quietLeave ? 'You left the profile' : 'That profile is no longer available to you.');
+          quietLeave = false;
+        }
+        sync.profile = null; sync.rev = -1;
+        saveSync();
+        continue;
+      }
+      const fromOld = !!(row && row.old);
+      const remoteRev = row && !fromOld ? Number(row.rev) || 0 : 0;
+      if (row && (Number(row.rev) || 0) !== sync.rev) {
+        // Another device, or a guest, saved since this one last synced.
         if (validState(row.data)) {
-          if (sync.dirty) { state = mergeStates(state, row.data); fmtCache = {}; saveLocal(); render(); }
+          if (swapped) showState(row.data);
+          else if (sync.dirty && !isGuest()) { state = mergeStates(state, row.data); fmtCache = {}; saveLocal(); render(); }
           else adopt(row.data);
         }
-        sync.rev = remoteRev;
-        saveSync();
+        if (!fromOld) { sync.rev = remoteRev; saveSync(); }
       }
-      if (row && !sync.dirty) break;
+      if (isGuest()) break;
+      if (row && !fromOld && !sync.dirty) break;
       if (await pushRow(remoteRev)) break;
     }
     sync.error = '';
     sync.last = new Date().toISOString();
+    try { await loadShare(); } catch (e) { /* the lists are fetched again with the next sync */ }
   } catch (e) {
     sync.error = e instanceof TypeError ? 'offline' : e.status === 404 ? 'The online database has not been set up yet.' : (e.message || 'Unknown error');
   }
@@ -677,7 +776,7 @@ function startApp() {
 async function afterSignIn() {
   const row = await pullRow();
   const remote = row && validState(row.data) ? row.data : null;
-  sync.rev = row ? Number(row.rev) || 0 : 0;
+  sync.rev = row && !row.old ? Number(row.rev) || 0 : 0;
   if (remote && hasData(remote) && hasData(state)) {
     pendingRemote = remote;
     saveSync();
@@ -991,7 +1090,9 @@ const atHour = (date, hour) => { const d = toDate(date); d.setHours(hour, 0, 0, 
 function buildNotices() {
   if (!state.settings.started) return [];
   const off = state.settings.notify || {};
-  const want = (kind) => off[kind] !== false;
+  // A guest is only told about comments: the bills, plans and limits are the owner's business.
+  const guest = isGuest();
+  const want = (kind) => !guest && off[kind] !== false;
   const now = Date.now();
   const ymNow = curYM();
   const list = [];
@@ -1084,37 +1185,62 @@ function buildNotices() {
     for (let week = 1; week <= 4; week++) add('updates', `update:${name}:${week}`, atHour(addDays(today(), 7 * week), 10), 'A new version of FETA is ready', body, 'update');
   }
 
+  if (guest || off.comments !== false) {
+    const me = myId();
+    for (const c of share.comments) {
+      const t = c.author_id !== me && state.transactions.find((x) => x.id === c.tx_id);
+      if (!t) continue;
+      const k = cat(t.categoryId);
+      add('comments', `comment:${c.id}`, Math.min(Date.parse(c.created_at) || now, now), `${c.author_name || 'Someone'} commented on ${t.note || (k ? k.name : 'a transaction')}`, String(c.body || ''), 'home', t.date.slice(0, 7));
+      list[list.length - 1].tx = t.id;
+    }
+  }
+
   // Nothing older than five weeks, nothing further ahead than six.
   return list.filter((n) => n.at > now - 35 * 864e5 && n.at < now + 42 * 864e5).sort((a, b) => a.at - b.at);
 }
 
 const currentNotices = () => { const now = Date.now(); return buildNotices().filter((n) => n.at <= now).reverse(); };
-const seenNotices = () => new Set(state.seen || []);
+function seenNotices() {
+  if (!isGuest()) return new Set(state.seen || []);
+  try { return new Set(mergeSeen(JSON.parse(localStorage.getItem(GSEEN_KEY)), [])); } catch (e) { return new Set(); }
+}
 const unreadCount = () => { const seen = seenNotices(); return currentNotices().filter((n) => !seen.has(n.id)).length; };
 
-function noticesSheet() {
+// The bell opens the notifications as a full-screen list. Opening it counts as having read them, on this device and on
+// every other one using the account; the ones that were new are still marked New while the list stays open.
+function openNotices() {
   const list = currentNotices();
   const seen = seenNotices();
-  openSheet('Notifications', `
-    <div class="list">${list.length ? list.map((n) => `<button class="row" data-act="notice-go" data-id="${esc(n.tab)}" data-month="${esc(n.month)}">
+  ui.noticeNew = list.filter((n) => !seen.has(n.id)).map((n) => n.id);
+  if (ui.noticeNew.length) {
+    const ids = list.map((n) => n.id);
+    if (isGuest()) { try { localStorage.setItem(GSEEN_KEY, JSON.stringify(mergeSeen([...seen], ids))); } catch (e) { /* ignore */ } }
+    else { state.seen = mergeSeen(state.seen, ids); save(); }
+  }
+  ui.page = 'notices';
+  closeSheet(); render(); window.scrollTo(0, 0);
+}
+function viewNotices() {
+  const list = currentNotices();
+  const fresh = new Set(ui.noticeNew);
+  return `<header class="top sub-top"><button class="x" data-act="notices-back" aria-label="Back">‹</button><h1>Notifications</h1></header>
+    <div class="list">${list.length ? list.map((n) => `<button class="row" data-act="notice-go" data-id="${esc(n.tab)}" data-month="${esc(n.month)}" data-tx="${esc(n.tx || '')}">
       <span class="emoji" aria-hidden="true">${NOTIFY_EMOJI[n.kind] || '🔔'}</span>
-      <span class="row-main"><span class="row-top"><span class="name" style="white-space:normal">${esc(n.title)}</span>${seen.has(n.id) ? '' : '<span class="pill">New</span>'}</span>
+      <span class="row-main"><span class="row-top"><span class="name" style="white-space:normal">${esc(n.title)}</span>${fresh.has(n.id) ? '<span class="pill">New</span>' : ''}</span>
       <span class="row-sub" style="white-space:normal">${esc(n.body)}</span></span></button>`).join('')
       : '<div class="empty">Nothing to tell you right now. Bills that are due, the monthly report, planner reminders and app updates show up here.</div>'}</div>
-    <button class="btn ghost" data-act="notice-go" data-id="more">Choose what to be notified about</button>`);
-  // Opening the list counts as having read it, on this device and on every other one using the account.
-  if (list.some((n) => !seen.has(n.id))) { state.seen = mergeSeen(state.seen, list.map((n) => n.id)); save(); }
-  const bell = $('.bell .badge');
-  if (bell) bell.remove();
+    ${isGuest() ? '' : '<button class="btn ghost" style="margin-top:14px" data-act="notice-go" data-id="more">Choose what to be notified about</button>'}`;
 }
 
 // Called by the Android app when a notification is tapped, and by the list above.
-window.fetaGo = (tab, month) => {
+window.fetaGo = (tab, month, tx) => {
   if (!state.settings.started) return;
   closeSheet();
   if (tab === 'update') { ui.tab = 'home'; render(); if (androidUpdate) androidUpdateSheet(); return; }
   if (!['home', 'bills', 'savings', 'reports', 'planner', 'more'].includes(tab)) return;
-  ui.tab = tab; ui.bar = null;
+  if (isGuest() && tab !== 'home' && tab !== 'reports') return;
+  ui.tab = tab; ui.bar = null; ui.page = null;
   // The only way here with Setup is the bell's "Choose what to be notified about".
   ui.setup = tab === 'more' ? 'notify' : null;
   if (tab === 'home') { ui.home = 'month'; if (isYM(month)) ui.month = month; }
@@ -1122,6 +1248,8 @@ window.fetaGo = (tab, month) => {
   // A weekly report is opened with the first day of its week.
   if (tab === 'reports' && isDate(month)) { ui.rep.period = 'week'; ui.rep.cursor = month; }
   render(); window.scrollTo(0, 0);
+  // A comment's notification opens the transaction it was written on.
+  if (tx) reopenTx(tx);
 };
 
 const notifyState = () => { try { return android && android.notifyState ? String(android.notifyState()) : ''; } catch (e) { return ''; } };
@@ -1222,6 +1350,7 @@ function fabHtml() {
     reports: ['add-tx', ADD_TITLE[ui.rep.measure]],
     planner: ui.planner === 'plans' ? ['add-plan', 'Add a plan'] : ['add-debt', recv ? 'Add money someone owes you' : 'Add money you owe']
   }[ui.tab];
+  if (isGuest()) return guestCanAdd() ? '<button class="fab" data-act="add-tx" aria-label="Add an expense">+</button>' : '';
   return fab ? `<button class="fab" data-act="${fab[0]}" aria-label="${fab[1]}">+</button>` : '';
 }
 
@@ -1230,20 +1359,32 @@ function render() {
   queueNotify();
   if (!state.settings.started) { app.innerHTML = viewWelcome(); return; }
   const views = { home: viewHome, bills: viewBills, savings: viewSavings, reports: viewReports, planner: viewPlanner, more: viewMore };
-  const tabs = [['home', 'Home'], ['bills', 'Bills'], ['savings', 'Savings'], ['reports', 'Reports'], ['planner', 'Planner'], ['more', 'Setup']];
-  const overdue = dueItems(curYM()).filter((it) => dueStatus(it) === 'unpaid').length;
+  // A guest has Home and Reports, and a Setup that only holds their own profile. Bills, Savings and Planner belong to the owner.
+  const guest = isGuest();
+  const guestTabs = ['home', 'reports', 'more'];
+  if (guest && !guestTabs.includes(ui.tab)) ui.tab = 'home';
+  const tabs = [['home', 'Home'], ['bills', 'Bills'], ['savings', 'Savings'], ['reports', 'Reports'], ['planner', 'Planner'], ['more', 'Setup']]
+    .filter(([id]) => !guest || guestTabs.includes(id));
+  // Invitations waiting for an answer are marked on Setup, where the profile is.
+  const invites = sync.session ? share.invites.length : 0;
+  const notices = ui.page === 'notices';
+  const overdue = guest ? 0 : dueItems(curYM()).filter((it) => dueStatus(it) === 'unpaid').length;
+  // Anything other than the person's own main profile is named at the top, so it is clear whose money this is.
+  const shown = sync.profile && !sync.profile.main ? sync.profile : null;
+  const profileBar = shown ? `<button class="profile-bar" data-act="profile"><span class="pill ${guest ? '' : 'done'}">${guest ? 'Guest' : 'Own'}</span>
+    <span class="name">${esc(profileLabel(shown))}</span>${guest ? `<span class="row-sub">${ROLE_TEXT[shown.role === 'add' ? 'add' : 'view']}</span>` : ''}</button>` : '';
   // When the tab changes, the glass capsule slides from the old tab to the new one and the page slides in from that side.
   const index = tabs.findIndex(([id]) => id === ui.tab);
   const from = lastTabIndex == null ? index : lastTabIndex;
   const slide = index > from ? 'from-right' : index < from ? 'from-left' : '';
   lastTabIndex = index;
   app.innerHTML = `
-    <div class="view ${slide}">${views[ui.tab]()}</div>
-    ${fabHtml()}
+    <div class="view ${slide}">${notices ? viewNotices() : profileBar + views[ui.tab]()}</div>
+    ${notices ? '' : fabHtml()}
     <nav class="tabbar"><div class="tabbar-in" style="--n:${tabs.length}">
       <i class="tab-pill" style="--i:${from}" aria-hidden="true"></i>
       ${tabs.map(([id, label]) => `<button class="tab ${ui.tab === id ? 'on' : ''}" data-act="tab" data-id="${id}" ${ui.tab === id ? 'aria-current="page"' : ''}>
-        ${ICONS[id]}${id === 'home' && overdue ? `<i class="badge" aria-label="${overdue} unpaid">${overdue}</i>` : ''}<span>${label}</span></button>`).join('')}
+        ${ICONS[id]}${id === 'home' && overdue ? `<i class="badge" aria-label="${overdue} unpaid">${overdue}</i>` : ''}${id === 'more' && invites ? `<i class="badge">${invites}</i>` : ''}<span>${label}</span></button>`).join('')}
     </div></nav>`;
   if (from !== index) {
     requestAnimationFrame(() => requestAnimationFrame(() => { const pill = $('.tab-pill'); if (pill) pill.style.setProperty('--i', index); }));
@@ -1297,7 +1438,8 @@ function monthNav(ym, act) {
 function txRow(t) {
   const c = cat(t.categoryId);
   const title = t.note || (c ? c.name : 'Uncategorised');
-  const tags = [t.type === 'saving' ? 'Savings' : '', t.note && c ? c.name : '', t.emiId ? 'EMI' : t.recurringId ? 'Repeating' : ''].filter(Boolean).join(' · ');
+  const talk = share.comments.filter((x) => x.tx_id === t.id).length;
+  const tags = [t.type === 'saving' ? 'Savings' : '', t.note && c ? c.name : '', t.emiId ? 'EMI' : t.recurringId ? 'Repeating' : '', t.byName ? `Added by ${t.byName}` : '', talk ? `💬 ${talk}` : ''].filter(Boolean).join(' · ');
   return `<button class="row" data-act="edit-tx" data-id="${t.id}">
     <span class="emoji" aria-hidden="true">${esc((c && c.emoji) || (t.type === 'income' ? '💰' : t.type === 'saving' ? '🏦' : '•'))}</span>
     <span class="row-main">
@@ -1483,8 +1625,8 @@ function viewHome() {
         <div class="kpi"><div class="label">Savings</div><div class="v">${fmt(t.saving)}</div></div>
       </div>
     </section>
-    ${toPay}
-    ${recv || pay ? `<button class="card tap" data-act="open-owed">
+    ${isGuest() ? '' : toPay}
+    ${!isGuest() && (recv || pay) ? `<button class="card tap" data-act="open-owed">
       <div class="kpis" style="margin:0;padding:0;border:0">
         <div class="kpi"><div class="label">Owed to me</div><div class="v">${fmt(recv)}</div></div>
         <div class="kpi"><div class="label">I owe</div><div class="v">${fmt(pay)}</div></div>
@@ -2035,6 +2177,7 @@ function viewPlanner() {
 
 // The lists under Setup. Each one is a row on the Setup screen and opens on a page of its own.
 const SETUP_LISTS = [
+  ['profile', 'Profile', '👤', '', ''],
   ['income-primary', 'Primary income sources', '💼', 'income', 'primary'],
   ['income-secondary', 'Secondary income sources', '💵', 'income', 'secondary'],
   ['expense', 'Expense categories', '🛒', 'expense', ''],
@@ -2046,6 +2189,7 @@ const setupCats = (type, group) => catsOf(type).filter((c) => !group || c.group 
 // One list from Setup on its own page, with a Back button at the top left.
 function viewSetupList([id, title, , type, group]) {
   const head = (extra) => `<header class="top sub-top"><button class="x" data-act="setup-back" aria-label="Back">‹</button><h1>${title}</h1>${extra}</header>`;
+  if (id === 'profile') return head('') + profileBody();
   if (id === 'notify') return head('') + notifyCard(false);
   const list = setupCats(type, group);
   return `${head(`<button class="link" data-act="add-cat" data-type="${type}" data-group="${group}">+ Add</button>`)}
@@ -2056,12 +2200,16 @@ function viewSetupList([id, title, , type, group]) {
 }
 
 function viewMore() {
-  const open = SETUP_LISTS.find((x) => x[0] === ui.setup);
+  // A guest's Setup holds their own profile, the language and the app version. The rest is the owner's.
+  const guest = isGuest();
+  const mine = SETUP_LISTS.filter((x) => !guest || x[0] === 'profile');
+  const open = mine.find((x) => x[0] === ui.setup);
   if (open) return viewSetupList(open);
   const th = state.settings.theme;
-  const lists = `<div class="list" style="margin-top:16px">${SETUP_LISTS.map(([id, title, emoji, type, group]) => `<button class="row go" data-act="setup-open" data-id="${id}">
+  const invites = sync.session ? share.invites.length : 0;
+  const lists = `<div class="list" style="margin-top:16px">${mine.map(([id, title, emoji, type, group]) => `<button class="row go" data-act="setup-open" data-id="${id}">
       <span class="emoji" aria-hidden="true">${emoji}</span>
-      <span class="row-main"><span class="row-top"><span class="name" style="white-space:normal">${title}</span>${type ? `<span class="row-sub">${setupCats(type, group).length}</span>` : ''}</span></span>
+      <span class="row-main"><span class="row-top"><span class="name" style="white-space:normal">${title}</span>${type ? `<span class="row-sub">${setupCats(type, group).length}</span>` : ''}${id === 'profile' && invites ? `<span class="pill unpaid">${invites} new</span>` : ''}</span></span>
       <span class="chev" aria-hidden="true">›</span></button>`).join('')}</div>`;
   const account = sync.session
     ? `<section class="card">
@@ -2080,22 +2228,22 @@ function viewMore() {
     <div class="sec-head" style="margin-top:0"><h2>Account</h2></div>
     ${account}
     ${lists}
-    ${locationCard()}
+    ${guest ? '' : locationCard()}
     <div class="sec-head"><h2>Settings</h2></div>
     <section class="card">
       <label class="field"><span>Language</span><select data-lang>${langOptions()}</select></label>
-      <label class="field"><span>Currency</span><select data-setting="currency">${currencyOptions(state.settings.currency)}</select></label>
+      ${guest ? '' : `<label class="field"><span>Currency</span><select data-setting="currency">${currencyOptions(state.settings.currency)}</select></label>
       <label class="field" style="margin-bottom:0"><span>Appearance</span><select data-setting="theme">
         ${[['auto', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => `<option value="${v}" ${th === v ? 'selected' : ''}>${l}</option>`).join('')}
-      </select></label>
+      </select></label>`}
     </section>
-    <div class="sec-head"><h2>Your data</h2></div>
+    ${guest ? '' : `<div class="sec-head"><h2>Your data</h2></div>
     <section class="card">
       <p class="note" style="margin:0 0 14px">${sync.session ? 'Your data is saved to your account. A backup file is an extra copy you keep yourself.' : 'Everything lives only on this device. Save a backup now and then, because clearing Safari website data or deleting the app icon removes it.'}</p>
       <button class="btn" data-act="backup">Save a backup file</button>
       <label class="btn ghost" style="text-align:center;margin-top:10px">Restore from a backup<input type="file" id="restore-file" accept="application/json,.json" class="hidden"></label>
       <button class="btn ghost" data-act="export-csv">Export transactions (CSV)</button>
-    </section>
+    </section>`}
     ${window.FetaAndroid ? '' : `<div class="sec-head"><h2>Put it on your home screen</h2></div>
     <section class="card"><p class="note" style="margin:0">In Safari, tap the Share button, then “Add to Home Screen”. The app then opens full screen and works without internet.</p></section>`}
     <div class="sec-head"><h2>App version</h2></div>
@@ -2137,12 +2285,15 @@ const NEW_CAT_OPTION = `<option value="${NEW_CAT}">＋ New category…</option>`
 const CAT_ICONS = ['🏦', '🧸', '🛟', '🎓', '🏠', '🚗', '✈️', '💍', '🕋', '🩺', '🎁', '📱', '💻', '🛒', '💡', '🍽️', '🚌', '👕', '💊', '🐾', '🎨', '🏋️', '💼', '📦'];
 
 function txSheet(tx, preset = {}) {
+  // A guest only gets the form for a new expense, or for an expense they added themselves. Anything else is shown, not edited.
+  const guest = isGuest();
+  if (guest && !(guestCanAdd() && (!tx || tx.by === myId()))) { if (tx) txViewSheet(tx); return; }
   const v = tx || preset;
-  const type = v.type || 'expense';
+  const type = guest ? 'expense' : v.type || 'expense';
   const linked = !!(v.recurringId || v.emiId);
-  const fixedType = linked || (!tx && !!preset.lockType);
+  const fixedType = guest || linked || (!tx && !!preset.lockType);
   const date = tx ? tx.date : preset.date || (ui.month === curYM() || ui.tab !== 'home' ? today() : ui.month + '-01');
-  const bill = v.recurringId ? state.recurring.find((r) => r.id === v.recurringId) : null;
+  const bill = !guest && v.recurringId ? state.recurring.find((r) => r.id === v.recurringId) : null;
   const hidden = ['recurringId', 'emiId', 'planId', 'period'].map((k) => `<input type="hidden" name="${k}" value="${esc(v[k] || '')}">`).join('');
   openSheet(preset.title || (tx ? 'Edit' : preset.lockType ? ADD_TITLE[type] : 'Add'), `
     <form data-form="tx" novalidate>
@@ -2153,7 +2304,7 @@ function txSheet(tx, preset = {}) {
       <label class="field"><span data-note-label>${NOTE_LABEL[type]}</span>
         <input type="text" name="note" maxlength="120" autocomplete="off" placeholder="${NOTE_HINT[type]}" value="${esc(v.note || '')}"></label>
       <div class="two">
-        <label class="field"><span>Category</span><select name="categoryId">${catOptions(type, v.categoryId)}${NEW_CAT_OPTION}</select></label>
+        <label class="field"><span>Category</span><select name="categoryId">${catOptions(type, v.categoryId)}${guest ? '' : NEW_CAT_OPTION}</select></label>
         <label class="field"><span>Date</span><input type="date" name="date" value="${date}"></label>
       </div>
       <div class="newcat hidden" data-newcat>
@@ -2163,10 +2314,10 @@ function txSheet(tx, preset = {}) {
       </div>
       <button class="btn">${tx ? 'Save changes' : preset.cta || 'Add'}</button>
       ${!tx && preset.canSkip ? `<button type="button" class="btn ghost" data-act="skip-due" data-id="${v.recurringId}" data-period="${v.period}">${isDate(v.period) ? 'Skip this week' : 'Skip this month'}</button>` : ''}
-      ${tx && !linked && tx.type !== 'income' ? `<button type="button" class="btn ghost" data-act="tx-to-bill" data-id="${tx.id}">Make this a monthly bill</button>` : ''}
+      ${tx && !guest && !linked && tx.type !== 'income' ? `<button type="button" class="btn ghost" data-act="tx-to-bill" data-id="${tx.id}">Make this a monthly bill</button>` : ''}
       ${tx ? `<button type="button" class="btn danger" data-act="del-tx" data-id="${tx.id}">Delete</button>` : ''}
       ${bill ? billBlock(bill) : ''}
-    </form>`);
+    </form>${commentsBlock(tx)}`);
 }
 
 function catSheet(c, type, group) {
@@ -2438,6 +2589,10 @@ function submitTx(f) {
   if (!TYPES.includes(f.type)) return;
   if (!isDate(f.date)) return toast('Pick a date.');
   let c = cat(f.categoryId);
+  if (isGuest()) {
+    if (!guestCanAdd()) return;
+    return guestSaveTx({ id: f.id || uid(), amount, categoryId: c && c.type === 'expense' ? c.id : '', date: f.date, note: f.note.trim().slice(0, 120) }, !!f.id);
+  }
   if (f.categoryId === NEW_CAT) {
     const name = String(f.newCatName || '').trim().slice(0, 40);
     if (!name) return toast('Give the new category a name.');
@@ -2625,20 +2780,497 @@ function restoreFrom(file) {
   reader.readAsText(file);
 }
 
+/* ---------- Profiles, guests and comments ---------- */
+
+// A person has one main profile and may add more. They can also be a guest in someone else's profile: a guest sees
+// the reports and transactions, and, if the owner allows it, adds expenses. Guests never save the profile's data
+// themselves; the database adds their expense for them after checking that they may.
+const APP_URL = 'https://offlinecrow.github.io/FETA/';
+const AVATAR_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
+// Profile pictures are switched off for now, to save space on the free online plan: people are shown by the first
+// letter of their name. Everything for pictures is still here; set this to true to switch them on again.
+const PICTURES = false;
+const api = async (path, opt = {}) => sb(path, { ...opt, token: await freshToken() });
+const person = (id) => share.people[id] || {};
+const myName = () => person(myId()).name || (sync.session ? sync.session.user.email.split('@')[0] : '');
+const fmtWhen = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? '' : d.toLocaleString(LOCALE(), { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }); };
+
+function avatarHtml(who, cls = '') {
+  const pic = PICTURES && who && AVATAR_RE.test(who.avatar || '') ? who.avatar : '';
+  const letter = String((who && who.name) || '').trim().charAt(0).toUpperCase() || '•';
+  return `<span class="avatar ${cls}" aria-hidden="true">${pic ? `<img src="${pic}" alt="">` : esc(letter)}</span>`;
+}
+
+// Every profile this person can open: their own first, then the ones they are a guest in.
+function allProfiles() {
+  const own = share.profiles.map((p) => ({ id: p.id, kind: 'own', main: !!p.is_main, name: p.name || '' }));
+  const guest = share.guestOf.map((g) => ({ id: g.profile_id, kind: 'guest', role: g.role === 'add' ? 'add' : 'view',
+    name: g.profile_name || '', owner: g.owner_email || '', ownerId: g.owner_id }));
+  return [...own, ...guest];
+}
+function profileLabel(p) {
+  if (!p) return 'My profile';
+  if (p.kind !== 'guest') return p.name || 'My profile';
+  const owner = person(p.ownerId).name || p.owner || 'Shared profile';
+  return p.name ? `${owner} · ${p.name}` : owner;
+}
+const ROLE_TEXT = { view: 'Reports only', add: 'Reports and adding expenses' };
+
+// The lists behind the profile screen: profiles, invitations, guests, names and pictures, and the comments
+// of the profile on screen. Fetched with every sync and kept on the device so they show without internet.
+async function loadShare() {
+  if (!sync.v2 || !sync.session) return;
+  const me = myId();
+  const active = sync.profile ? sync.profile.id : '';
+  const [profiles, guestRows, people, comments] = await Promise.all([
+    api(`/rest/v1/profiles?select=id,name,is_main&owner_id=eq.${encodeURIComponent(me)}&order=is_main.desc,name.asc`),
+    api('/rest/v1/profile_guests?select=*&order=created_at.asc'),
+    api('/rest/v1/people?select=user_id,name,avatar'),
+    active ? api(`/rest/v1/comments?select=*&profile_id=eq.${encodeURIComponent(active)}&order=created_at.asc&limit=1000`) : []
+  ]);
+  const rows = Array.isArray(guestRows) ? guestRows : [];
+  const next = {
+    profiles: Array.isArray(profiles) ? profiles : [],
+    guests: rows.filter((g) => g.owner_id === me),
+    guestOf: rows.filter((g) => g.owner_id !== me && g.status === 'accepted' && g.guest_id === me),
+    invites: rows.filter((g) => g.owner_id !== me && g.status === 'invited'),
+    people: Object.fromEntries((Array.isArray(people) ? people : []).map((p) => [p.user_id, { name: String(p.name || ''), avatar: String(p.avatar || '') }])),
+    comments: Array.isArray(comments) ? comments : []
+  };
+  if (isGuest()) {
+    // The owner may have changed what this guest is allowed to do.
+    const g = next.guestOf.find((x) => x.profile_id === sync.profile.id);
+    if (g && g.role !== sync.profile.role) { sync.profile.role = g.role === 'add' ? 'add' : 'view'; saveSync(); }
+  }
+  const changed = JSON.stringify(next) !== JSON.stringify(share);
+  share = next;
+  saveShare();
+  if (!changed) return;
+  if (!$('#sheet-root').firstChild) render();
+}
+
+// Shows another profile. Needs internet, and anything not yet saved online is sent first, so nothing is lost.
+async function switchProfile(p) {
+  if (!sync.session || !p) return;
+  if (syncing) await syncing;
+  if (sync.dirty) await syncNow();
+  if (sync.dirty) return toast('Your latest changes are not saved online yet. Connect to the internet, then try again.');
+  const before = { profile: sync.profile, rev: sync.rev };
+  clearTimeout(pushTimer);
+  sync.profile = p;
+  try {
+    const row = await pullRow();
+    if (!row || row.old || !validState(row.data)) throw new Error('gone');
+    sync.rev = Number(row.rev) || 0; sync.dirty = false;
+    saveSync();
+    share.comments = [];
+    Object.assign(ui, { tab: 'home', home: 'month', month: curYM(), filter: 'all', search: '', bar: null, setup: null, page: null });
+    lastTabIndex = null;
+    closeSheet();
+    showState(row.data);
+    window.scrollTo(0, 0);
+    toast(`Now showing: ${profileLabel(p)}`);
+    syncNow();
+  } catch (e) {
+    Object.assign(sync, before);
+    saveSync();
+    toast(e instanceof TypeError ? 'No internet connection. Try again when you are online.' : 'That profile could not be opened.');
+    syncNow();
+  }
+}
+const mainProfile = () => allProfiles().find((p) => p.kind === 'own' && p.main) || null;
+
+// The profile page under Setup: the person's name and picture, their profiles and invitations, and the guests of
+// the profile on screen.
+function profileBody() {
+  const signedIn = !!sync.session;
+  const active = sync.profile ? sync.profile.id : '';
+  let body = signedIn ? `<div class="me-head">${avatarHtml({ name: myName(), avatar: person(myId()).avatar }, 'big')}
+      <div class="me-text"><div class="name">${esc(myName())}</div><div class="row-sub">${esc(sync.session.user.email)}</div></div>
+      ${sync.v2 ? '<button class="link" data-act="edit-me">Edit</button>' : ''}</div>` : '<p class="note" style="margin:0">Sign in to use profiles, guests and comments.</p>';
+  if (signedIn && !sync.v2) body += '<p class="note" style="margin:0">Profiles, guests and comments are not switched on yet. They start working once the database update (sharing.sql) has been run in Supabase.</p>';
+  if (signedIn && sync.v2) {
+    if (share.invites.length) {
+      body += `<div class="sec-head"><h2>Invitations</h2></div><div class="list">${share.invites.map((g) => `<div class="row"><span class="row-main">
+        <span class="name" style="white-space:normal">${esc(profileLabel({ kind: 'guest', name: g.profile_name, owner: g.owner_email, ownerId: g.owner_id }))}</span>
+        <span class="row-sub" style="white-space:normal">${g.role === 'add' ? 'Invites you to see the reports and add expenses.' : 'Invites you to see the reports.'}</span>
+        <span class="btn-row"><button class="btn small" data-act="invite-accept" data-id="${esc(g.id)}">Accept</button>
+          <button class="btn ghost small" data-act="invite-decline" data-id="${esc(g.id)}">Decline</button></span></span></div>`).join('')}</div>`;
+    }
+    const list = allProfiles();
+    body += `<div class="sec-head"><h2>Profiles</h2><button class="link" data-act="new-profile">+ New profile</button></div>
+      <div class="list">${list.length ? list.map((p) => {
+        const on = p.id === active;
+        const sub = [p.kind === 'guest' ? ROLE_TEXT[p.role] : '', on ? 'Showing now' : ''].filter(Boolean).join(' · ');
+        return `<button class="row go" data-act="open-profile" data-id="${esc(p.id)}" ${on ? 'aria-current="true"' : ''}>
+          <span class="row-main"><span class="row-top"><span class="name">${esc(profileLabel(p))}</span><span class="pill ${p.kind === 'guest' ? '' : 'done'}">${p.kind === 'guest' ? 'Guest' : 'Own'}</span></span>
+          ${sub ? `<span class="row-sub">${sub}</span>` : ''}</span><span class="chev" aria-hidden="true">›</span></button>`;
+      }).join('') : '<div class="empty">Your profile appears here after the next sync.</div>'}</div>`;
+    if (active && !isGuest()) {
+      const guests = share.guests.filter((g) => g.profile_id === active);
+      body += `<div class="sec-head"><h2>Guests of this profile</h2><button class="link" data-act="invite-guest">+ Invite</button></div>
+        <div class="list">${guests.length ? guests.map((g) => `<button class="row go" data-act="open-guest" data-id="${esc(g.id)}">
+          <span class="row-main"><span class="row-top"><span class="name">${esc(person(g.guest_id).name || g.email)}</span><span class="pill ${g.status === 'accepted' ? 'done' : ''}">${g.status === 'accepted' ? 'Joined' : 'Invited'}</span></span>
+          <span class="row-sub">${esc(g.email)} · ${ROLE_TEXT[g.role === 'add' ? 'add' : 'view']}</span></span><span class="chev" aria-hidden="true">›</span></button>`).join('')
+          : '<div class="empty">Nobody else can see this profile.</div>'}</div>`;
+    }
+  }
+  return body;
+}
+// Opens the profile page, from wherever the person is.
+function profileSheet() {
+  closeSheet();
+  ui.tab = 'more'; ui.setup = 'profile'; ui.page = null; ui.bar = null;
+  render();
+}
+
+// A new picture waiting to be saved: undefined when the picture was not touched, '' when it was removed.
+let pendingAvatar;
+function meSheet() {
+  pendingAvatar = undefined;
+  const me = person(myId());
+  openSheet(PICTURES ? 'Your name and picture' : 'Your name', `
+    <form data-form="me" novalidate>
+      ${PICTURES ? `<div class="me-head"><span data-avatar-preview>${avatarHtml({ name: myName(), avatar: me.avatar }, 'big')}</span>
+        <div class="me-text"><label class="btn ghost small">Choose a picture<input type="file" id="avatar-file" accept="image/*" class="hidden"></label>
+        ${AVATAR_RE.test(me.avatar || '') ? '<button type="button" class="link" data-act="avatar-remove">Remove picture</button>' : ''}</div></div>` : ''}
+      <label class="field"><span>Name</span><input type="text" name="name" maxlength="40" autocomplete="name" value="${esc(myName())}" ${PICTURES ? '' : 'data-autofocus'}></label>
+      <p class="note">${PICTURES ? 'People you share a profile with see this name and picture.' : 'People you share a profile with see this name.'}</p>
+      <button class="btn">Save</button>
+    </form>`);
+  centerSheet();
+}
+
+// Shrinks a chosen photo to a small square, so it is quick to load and cheap to store.
+function readAvatar(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const side = Math.min(img.naturalWidth, img.naturalHeight);
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 160;
+        canvas.getContext('2d').drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, 160, 160);
+        resolve(canvas.toDataURL('image/jpeg', 0.82));
+      } catch (e) { reject(e); }
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('unreadable')); };
+    img.src = url;
+  });
+}
+async function pickAvatar(file) {
+  try {
+    const pic = await readAvatar(file);
+    if (!AVATAR_RE.test(pic) || pic.length > 60000) throw new Error('too big');
+    pendingAvatar = pic;
+    const box = $('#sheet-root [data-avatar-preview]');
+    if (box) box.innerHTML = avatarHtml({ name: myName(), avatar: pic }, 'big');
+  } catch (e) { toast('That picture could not be used. Try another one.'); }
+}
+
+async function submitMe(f) {
+  const name = String(f.name || '').trim().slice(0, 40);
+  if (!name) return toast('Give it a name.');
+  const avatar = !PICTURES ? '' : pendingAvatar === undefined ? person(myId()).avatar || '' : pendingAvatar;
+  try {
+    await api('/rest/v1/people', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal', body: { user_id: myId(), name, avatar } });
+    share.people[myId()] = { name, avatar };
+    saveShare();
+    render(); profileSheet(); toast('Saved');
+  } catch (e) { toast(authMessage(e)); }
+}
+
+// What can be done with one profile from the list: open it, rename it, delete it, or (for a guest) leave it.
+function profileOptionsSheet(p) {
+  const on = !!sync.profile && sync.profile.id === p.id;
+  const own = p.kind !== 'guest';
+  const id = esc(p.id);
+  openSheet(profileLabel(p), `
+    <p>${own ? 'Own' : 'Guest'}${own ? '' : ` · ${ROLE_TEXT[p.role]}`}${on ? ' · Showing now' : ''}</p>
+    ${on ? '' : `<button class="btn" data-act="switch-profile" data-id="${id}">Switch to this profile</button>`}
+    ${own ? `<button class="btn ghost" data-act="rename-profile" data-id="${id}">Rename</button>` : ''}
+    ${own && !p.main ? `<button class="btn danger" data-act="del-profile" data-id="${id}">Delete this profile</button>` : ''}
+    ${own ? '' : `<button class="btn danger" data-act="leave-profile" data-id="${id}">Leave this profile</button>`}
+    <button class="btn ghost" data-act="close-sheet">Close</button>`);
+  centerSheet();
+}
+
+// The form for a new profile, or (given one of the person's own profiles) for renaming it.
+function profileNameSheet(p) {
+  openSheet(p ? 'Rename profile' : 'New profile', `
+    <form data-form="profilename" novalidate>
+      <input type="hidden" name="id" value="${p ? esc(p.id) : ''}">
+      <label class="field"><span>Profile name</span><input type="text" name="name" maxlength="40" autocomplete="off" placeholder="For example Family or Business" value="${p ? esc(p.name || '') : ''}" data-autofocus></label>
+      ${p ? '' : '<p class="note">A new profile starts empty, with its own income, expenses, bills and reports. Your other profiles stay as they are.</p>'}
+      <button class="btn">${p ? 'Save' : 'Create profile'}</button>
+    </form>`);
+  centerSheet();
+}
+
+async function submitProfileName(f) {
+  const name = String(f.name || '').trim().slice(0, 40);
+  if (!name) return toast('Give it a name.');
+  try {
+    if (f.id) {
+      // Only the person's own profiles can be renamed; the database refuses anything else.
+      const p = allProfiles().find((x) => x.id === f.id && x.kind === 'own');
+      if (!p) return;
+      await api(`/rest/v1/profiles?id=eq.${encodeURIComponent(p.id)}`, { method: 'PATCH', body: { name } });
+      if (sync.profile && sync.profile.id === p.id) { sync.profile.name = name; saveSync(); }
+      await loadShare();
+      render(); profileSheet(); toast('Saved');
+      return;
+    }
+    const data = blankState();
+    data.settings.currency = state.settings.currency; data.settings.theme = state.settings.theme; data.settings.started = true;
+    data.categories = defaultCategories();
+    const rows = await api('/rest/v1/profiles', { method: 'POST', prefer: 'return=representation', body: { owner_id: myId(), name, is_main: false, data, rev: 1 } });
+    const made = first(rows);
+    if (!made) throw new Error('The profile could not be created.');
+    await switchProfile({ id: made.id, kind: 'own', main: false, name });
+  } catch (e) { toast(authMessage(e)); }
+}
+
+function inviteSheet() {
+  openSheet('Invite a guest', `
+    <form data-form="invite" novalidate>
+      <label class="field"><span>Guest’s email</span><input type="email" inputmode="email" name="email" autocomplete="off" autocapitalize="none" spellcheck="false" data-autofocus></label>
+      <div class="field"><span>What the guest can do</span>
+        <label class="check"><input type="radio" name="role" value="view" checked><span><span class="name">Reports only</span><span class="row-sub" style="white-space:normal;display:block">Sees the reports and the transactions. Cannot change anything.</span></span></label>
+        <label class="check"><input type="radio" name="role" value="add"><span><span class="name">Reports and adding expenses</span><span class="row-sub" style="white-space:normal;display:block">Also adds expenses. Cannot add income, bills, savings or plans, and cannot open Setup.</span></span></label>
+      </div>
+      <p class="note">The guest finds the invitation in FETA after creating an account or signing in with this email address.</p>
+      <button class="btn">Invite</button>
+    </form>`);
+  centerSheet();
+}
+
+async function submitInvite(f) {
+  const email = String(f.email || '').trim().toLowerCase();
+  if (!validEmail(email)) return toast('Enter the guest’s email address.');
+  if (email === sync.session.user.email.toLowerCase()) return toast('That is your own email address.');
+  if (!sync.profile || isGuest()) return;
+  try {
+    await api('/rest/v1/profile_guests', { method: 'POST', body: { profile_id: sync.profile.id, owner_email: sync.session.user.email, profile_name: sync.profile.name || '', email, role: f.role === 'add' ? 'add' : 'view' } });
+    await loadShare();
+    openSheet('Invitation saved', `<p>${esc(email)} finds the invitation in FETA after creating an account or signing in with that email address.</p>
+      <button class="btn" data-act="invite-share" data-id="${esc(email)}">Send them a message</button>
+      <button class="btn ghost" data-act="profile">Done</button>`);
+    centerSheet();
+  } catch (e) { toast(e.status === 409 ? 'That person is already invited to this profile.' : authMessage(e)); }
+}
+
+let openGuestId = '';
+function guestSheet(g) {
+  openGuestId = g.id;
+  const role = g.role === 'add' ? 'add' : 'view';
+  openSheet(person(g.guest_id).name || g.email, `
+    <p>${esc(g.email)} · ${g.status === 'accepted' ? 'Joined' : 'Invited, has not joined yet'}</p>
+    <div class="field"><span>What the guest can do</span>${segButtons('guest-role', [['view', 'Reports only'], ['add', 'Add expenses too']], role)}</div>
+    <button class="btn danger" data-act="guest-remove">${g.status === 'accepted' ? 'Remove this guest' : 'Cancel the invitation'}</button>
+    <button class="btn ghost" data-act="profile">Back</button>`);
+  slidePills();
+}
+
+// Comments under a transaction. A reply sits under the comment it answers.
+function commentsBlock(tx) {
+  if (!tx || !sync.v2 || !sync.session || !sync.profile) return '';
+  const all = share.comments.filter((c) => c.tx_id === tx.id);
+  const me = myId();
+  const one = (c, top) => `<div class="comment ${top === c.id ? '' : 'reply'}">${avatarHtml({ name: c.author_name, avatar: person(c.author_id).avatar })}
+    <div class="comment-main"><div class="comment-head"><span class="name">${esc(c.author_name || 'Someone')}</span><span class="row-sub">${esc(fmtWhen(c.created_at))}</span></div>
+      <div class="comment-body">${esc(c.body)}</div>
+      <div class="comment-acts"><button type="button" class="link" data-act="comment-reply" data-id="${esc(top)}" data-name="${esc(c.author_name || '')}">Reply</button>
+        ${c.author_id === me || !isGuest() ? `<button type="button" class="link" data-act="comment-del" data-id="${esc(c.id)}" data-tx="${esc(tx.id)}">Delete</button>` : ''}</div></div></div>`;
+  const tops = all.filter((c) => !c.parent_id || !all.some((p) => p.id === c.parent_id));
+  return `<div class="comments"><div class="sec-head"><h2>Comments</h2></div>
+    ${tops.length ? tops.map((c) => one(c, c.id) + all.filter((r) => r.parent_id === c.id).map((r) => one(r, c.id)).join('')).join('') : '<p class="note" style="margin:0 0 12px">No comments yet.</p>'}
+    <form data-form="comment" novalidate>
+      <input type="hidden" name="tx" value="${esc(tx.id)}"><input type="hidden" name="parent" value="">
+      <p class="note hidden" data-replying></p>
+      <div class="comment-box"><input type="text" name="body" maxlength="500" autocomplete="off" placeholder="Write a comment" aria-label="Write a comment"><button class="btn small">Send</button></div>
+    </form></div>`;
+}
+function reopenTx(id) {
+  const t = state.transactions.find((x) => x.id === id);
+  if (t) txSheet(t); else closeSheet();
+}
+
+async function submitComment(f) {
+  const body = String(f.body || '').trim().slice(0, 500);
+  if (!body) return toast('Write something first.');
+  if (!sync.profile) return;
+  try {
+    const rows = await api('/rest/v1/comments', { method: 'POST', prefer: 'return=representation',
+      body: { profile_id: sync.profile.id, tx_id: f.tx, parent_id: f.parent || null, author_name: myName().slice(0, 40), body } });
+    if (first(rows)) { share.comments.push(first(rows)); saveShare(); }
+    render(); reopenTx(f.tx);
+  } catch (e) { toast(authMessage(e)); }
+}
+
+// What a guest sees when opening a transaction they may not change: its details and the comments.
+function txViewSheet(tx) {
+  const c = cat(tx.categoryId);
+  const facts = [tx.note && c ? c.name : '', `${fmtDay(tx.date)}, ${tx.date.slice(0, 4)}`, tx.byName ? `Added by ${tx.byName}` : ''].filter(Boolean);
+  openSheet(TYPE_LABEL[tx.type], `<div class="list"><div class="row">
+      <span class="emoji" aria-hidden="true">${esc((c && c.emoji) || (tx.type === 'income' ? '💰' : tx.type === 'saving' ? '🏦' : '•'))}</span>
+      <span class="row-main"><span class="row-top"><span class="name" style="white-space:normal">${esc(tx.note || (c ? c.name : 'Uncategorised'))}</span>
+        <span class="amt ${tx.type === 'income' ? 'inc' : ''}">${tx.type === 'income' ? '+' : '−'}${fmt(tx.amount)}</span></span>
+      ${facts.map((x) => `<span class="row-sub" style="white-space:normal">${esc(x)}</span>`).join('')}</span></div></div>
+    ${commentsBlock(tx)}`);
+}
+
+// A guest's expense goes through the database, which checks that the guest may add it.
+async function guestSaveTx(tx, existing) {
+  try {
+    await api('/rest/v1/rpc/guest_save_expense', { method: 'POST', body: { p_profile: sync.profile.id, p_tx: tx } });
+    closeSheet(); toast(existing ? 'Saved' : 'Expense added');
+    await syncNow(); render();
+  } catch (e) { toast(e instanceof TypeError ? authMessage(e) : 'You can no longer add expenses to this profile.'); syncNow(); }
+}
+async function guestDeleteTx(id) {
+  try {
+    await api('/rest/v1/rpc/guest_delete_expense', { method: 'POST', body: { p_profile: sync.profile.id, p_tx_id: id } });
+    closeSheet(); toast('Deleted');
+    await syncNow(); render();
+  } catch (e) { toast(authMessage(e)); }
+}
+
+// After a change to profiles or guests: fetch the lists again and show the profile screen.
+async function shareDone(msg) {
+  try { await loadShare(); } catch (e) { /* the next sync fetches them */ }
+  render(); profileSheet();
+  if (msg) toast(msg);
+}
+
+const shareActions = {
+  'profile': () => { profileSheet(); window.scrollTo(0, 0); },
+  'edit-me': () => meSheet(),
+  'avatar-remove': (el) => { pendingAvatar = ''; const box = $('#sheet-root [data-avatar-preview]'); if (box) box.innerHTML = avatarHtml({ name: myName(), avatar: '' }, 'big'); el.remove(); },
+  'new-profile': () => profileNameSheet(null),
+  'open-profile': (el) => { const p = allProfiles().find((x) => x.id === el.dataset.id); if (p) profileOptionsSheet(p); },
+  'rename-profile': (el) => { const p = allProfiles().find((x) => x.id === el.dataset.id && x.kind === 'own'); if (p) profileNameSheet(p); },
+  'switch-profile': (el) => {
+    const p = allProfiles().find((x) => x.id === el.dataset.id);
+    if (!p) return;
+    if (sync.profile && p.id === sync.profile.id) return closeSheet();
+    switchProfile(p);
+  },
+  'del-profile': (el) => {
+    const p = allProfiles().find((x) => x.id === el.dataset.id && x.kind === 'own' && !x.main);
+    if (!p) return;
+    confirmSheet('Delete this profile?', 'Everything in this profile is deleted for good: its income, expenses, bills, savings and plans. Your other profiles are not touched.', 'Delete profile', async () => {
+      const on = !!sync.profile && sync.profile.id === p.id;
+      try {
+        if (on) { clearTimeout(pushTimer); if (syncing) await syncing; }
+        await api(`/rest/v1/profiles?id=eq.${encodeURIComponent(p.id)}`, { method: 'DELETE' });
+        if (!on) return shareDone('Deleted');
+        sync.dirty = false; saveSync();
+        const main = mainProfile();
+        if (main) await switchProfile(main); else { sync.profile = null; sync.rev = -1; saveSync(); await syncNow(); }
+      } catch (e) { toast(authMessage(e)); }
+    });
+  },
+  'leave-profile': (el) => {
+    const g = share.guestOf.find((x) => x.profile_id === el.dataset.id);
+    if (!g) return;
+    confirmSheet('Leave this profile?', 'You will no longer see it. The owner can invite you again.', 'Leave', async () => {
+      const on = !!sync.profile && sync.profile.id === g.profile_id;
+      try {
+        await api(`/rest/v1/profile_guests?id=eq.${encodeURIComponent(g.id)}`, { method: 'DELETE' });
+        if (!on) return shareDone('You left the profile');
+        // The next sync finds the profile gone and goes back to the person's own.
+        quietLeave = true;
+        closeSheet();
+        await syncNow();
+      } catch (e) { toast(authMessage(e)); }
+    });
+  },
+  'invite-guest': () => inviteSheet(),
+  'invite-share': async (el) => {
+    const text = tr(`I invited you to my profile in FETA, the family expense tracker. Open ${APP_URL} and create an account or sign in with ${el.dataset.id}. Then tap your picture at the top of Home and accept the invitation.`);
+    if (navigator.share) { try { await navigator.share({ text }); } catch (e) { /* closed without sending */ } return; }
+    location.href = `mailto:${encodeURIComponent(el.dataset.id)}?subject=${encodeURIComponent('FETA')}&body=${encodeURIComponent(text)}`;
+  },
+  'invite-accept': async (el) => {
+    try { await api('/rest/v1/rpc/accept_invite', { method: 'POST', body: { p_id: el.dataset.id } }); await shareDone('Invitation accepted. The profile is in your list.'); }
+    catch (e) { toast(authMessage(e)); }
+  },
+  'invite-decline': async (el) => {
+    try { await api(`/rest/v1/profile_guests?id=eq.${encodeURIComponent(el.dataset.id)}`, { method: 'DELETE' }); await shareDone('Invitation declined'); }
+    catch (e) { toast(authMessage(e)); }
+  },
+  'open-guest': (el) => { const g = find(share.guests, el); if (g) guestSheet(g); },
+  'guest-role': async (el) => {
+    const g = share.guests.find((x) => x.id === openGuestId);
+    if (!g) return;
+    try {
+      await api(`/rest/v1/profile_guests?id=eq.${encodeURIComponent(g.id)}`, { method: 'PATCH', body: { role: el.dataset.id === 'add' ? 'add' : 'view' } });
+      await loadShare();
+      const now = share.guests.find((x) => x.id === openGuestId);
+      if (now) guestSheet(now);
+      toast('Saved');
+    } catch (e) { toast(authMessage(e)); }
+  },
+  'guest-remove': () => {
+    const g = share.guests.find((x) => x.id === openGuestId);
+    if (!g) return;
+    confirmSheet(g.status === 'accepted' ? 'Remove this guest?' : 'Cancel the invitation?', `${g.email} will no longer be able to open this profile.`, g.status === 'accepted' ? 'Remove guest' : 'Cancel invitation', async () => {
+      try { await api(`/rest/v1/profile_guests?id=eq.${encodeURIComponent(g.id)}`, { method: 'DELETE' }); await shareDone(g.status === 'accepted' ? 'Guest removed' : 'Invitation cancelled'); }
+      catch (e) { toast(authMessage(e)); }
+    });
+  },
+  'comment-reply': (el) => {
+    const form = $('#sheet-root [data-form="comment"]');
+    if (!form) return;
+    form.elements.parent.value = el.dataset.id;
+    const note = $('[data-replying]', form);
+    note.innerHTML = `<span>${esc(`Replying to ${el.dataset.name || 'this comment'}`)}</span> <button type="button" class="link" data-act="comment-cancel">Cancel</button>`;
+    note.classList.remove('hidden');
+    form.elements.body.focus();
+  },
+  'comment-cancel': () => {
+    const form = $('#sheet-root [data-form="comment"]');
+    if (!form) return;
+    form.elements.parent.value = '';
+    $('[data-replying]', form).classList.add('hidden');
+  },
+  'comment-del': async (el) => {
+    try {
+      await api(`/rest/v1/comments?id=eq.${encodeURIComponent(el.dataset.id)}`, { method: 'DELETE' });
+      // Its replies are deleted with it.
+      share.comments = share.comments.filter((c) => c.id !== el.dataset.id && c.parent_id !== el.dataset.id);
+      saveShare();
+      render(); reopenTx(el.dataset.tx);
+    } catch (e) { toast(authMessage(e)); }
+  }
+};
+
+// What a guest may tap. Everything else that changes the profile is refused, whatever is on screen.
+const GUEST_ACTS = new Set(['tab', 'setup-open', 'setup-back', 'notices', 'notices-back', 'notice-go', 'close-sheet', 'confirm-yes', 'month', 'month-now', 'home-mode', 'home-year', 'home-month',
+  'year-report', 'filter', 'add-tx', 'edit-tx', 'del-tx', 'rep-period', 'rep-measure', 'rep-nav', 'rep-goto', 'rep-cat', 'bar', 'rep-share', 'rep-download',
+  'sign-out', 'sync-now', 'android-update', 'android-later', 'android-download', 'android-install', 'update-app', 'toggle-pass',
+  'profile', 'edit-me', 'avatar-remove', 'new-profile', 'open-profile', 'rename-profile', 'del-profile', 'switch-profile', 'leave-profile', 'invite-accept', 'invite-decline',
+  'comment-reply', 'comment-cancel', 'comment-del']);
+const GUEST_FORMS = new Set(['tx', 'comment', 'me', 'profilename']);
+
 /* ---------- Events ---------- */
 
 const find = (list, el) => list.find((x) => x.id === el.dataset.id);
 const remove = (key, id) => { state[key] = state[key].filter((x) => x.id !== id); };
 
 const actions = {
-  'tab': (el) => { ui.tab = el.dataset.id; ui.bar = null; ui.setup = null; render(); window.scrollTo(0, 0); },
-  'setup-open': (el) => { ui.setup = el.dataset.id; render(); window.scrollTo(0, 0); },
+  'tab': (el) => { ui.tab = el.dataset.id; ui.bar = null; ui.setup = null; ui.page = null; render(); window.scrollTo(0, 0); },
+  'setup-open': (el) => { if (isGuest() && el.dataset.id !== 'profile') return; ui.setup = el.dataset.id; render(); window.scrollTo(0, 0); },
   'setup-back': () => { ui.setup = null; render(); window.scrollTo(0, 0); },
   // Using the app without an account is switched off: the welcome screen no longer offers it. The action is kept for the tests.
   'start': () => { startApp(); save(); render(); },
   'welcome-points': () => welcomePointsSheet(),
-  'notices': () => noticesSheet(),
-  'notice-go': (el) => window.fetaGo(el.dataset.id, el.dataset.month),
+  'notices': () => openNotices(),
+  'notices-back': () => { ui.page = null; render(); window.scrollTo(0, 0); },
+  'notice-go': (el) => window.fetaGo(el.dataset.id, el.dataset.month, el.dataset.tx),
   'notify-ask': () => { try { android.notifyAsk(); } catch (e) { toast('Open your phone’s settings and allow notifications for FETA.'); } },
   'android-update': () => androidUpdateSheet(),
   'android-later': () => { updateUi.later = true; closeSheet(); render(); },
@@ -2730,7 +3362,7 @@ const actions = {
   'filter': (el) => { ui.filter = el.dataset.id; render(); },
   'open-owed': () => { ui.tab = 'planner'; ui.planner = debtTotal('receivable') ? 'receivable' : 'payable'; render(); window.scrollTo(0, 0); },
 
-  'add-tx': () => txSheet(null, ui.tab === 'reports' ? { type: ui.rep.measure, lockType: true } : {}),
+  'add-tx': () => txSheet(null, isGuest() ? { type: 'expense', lockType: true } : ui.tab === 'reports' ? { type: ui.rep.measure, lockType: true } : {}),
   'add-saving': () => txSheet(null, { type: 'saving', lockType: true }),
   'save-year': (el) => { ui.saveYear = String(Number(ui.saveYear) + Number(el.dataset.d)); ui.bar = null; render(); },
   'fund': (el) => {
@@ -2752,7 +3384,7 @@ const actions = {
   },
   'add-saving-to': (el) => txSheet(null, { type: 'saving', lockType: true, categoryId: el.dataset.id }),
   'edit-tx': (el) => { const t = find(state.transactions, el); if (t) txSheet(t); },
-  'del-tx': (el) => { remove('transactions', el.dataset.id); done(); toast('Deleted'); },
+  'del-tx': (el) => { if (isGuest()) return guestDeleteTx(el.dataset.id); remove('transactions', el.dataset.id); done(); toast('Deleted'); },
 
   'due': (el) => { const it = dueItems(ui.month).find((x) => x.key === el.dataset.key); if (it) openDue(it, ui.month); },
   'emi-month': (el) => {
@@ -2857,10 +3489,12 @@ const actions = {
   'backup': () => shareOrDownload(`feta-backup-${today()}.json`, JSON.stringify(state, null, 2), 'application/json'),
   'export-csv': () => exportCsv(),
 };
+Object.assign(actions, shareActions);
 
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]');
   if (!el) return;
+  if (isGuest() && !GUEST_ACTS.has(el.dataset.act)) return;
   const fn = actions[el.dataset.act];
   if (fn) fn(el);
 });
@@ -2871,11 +3505,13 @@ const NUMBER_BOXES = 'input[inputmode="decimal"], input[inputmode="numeric"]';
 const USE_ENGLISH_DIGITS = 'Please use English numbers (0-9).';
 const otherDigits = (v) => /[^\d\P{Nd}]/u.test(String(v ?? ''));
 
-const submitters = { auth: submitAuth, newpass: submitNewPass, tx: submitTx, cat: submitCat, rec: submitRec, recchange: submitRecChange, emi: submitEmi, plan: submitPlan, debt: submitDebt, debtpay: submitDebtPay };
+const submitters = { auth: submitAuth, newpass: submitNewPass, tx: submitTx, cat: submitCat, rec: submitRec, recchange: submitRecChange, emi: submitEmi, plan: submitPlan, debt: submitDebt, debtpay: submitDebtPay,
+  me: submitMe, profilename: submitProfileName, invite: submitInvite, comment: submitComment };
 document.addEventListener('submit', (e) => {
   const form = e.target.closest('[data-form]');
   if (!form) return;
   e.preventDefault();
+  if (isGuest() && !GUEST_FORMS.has(form.dataset.form)) return;
   const odd = [...form.querySelectorAll(NUMBER_BOXES)].find((box) => otherDigits(box.value));
   if (odd) { if (!odd.closest('.hidden')) odd.focus(); return toast(USE_ENGLISH_DIGITS, 5000); }
   submitters[form.dataset.form](Object.fromEntries(new FormData(form)), form);
@@ -2883,6 +3519,9 @@ document.addEventListener('submit', (e) => {
 
 document.addEventListener('change', (e) => {
   const el = e.target;
+  if (el.id === 'avatar-file') { if (PICTURES && el.files[0]) pickAvatar(el.files[0]); el.value = ''; return; }
+  // A guest cannot change the owner's settings.
+  if (isGuest() && (el.dataset.notify || el.dataset.setting || el.id === 'restore-file')) return;
   const form = el.closest('[data-form]');
   if (form && form.dataset.form === 'tx' && el.name === 'categoryId') {
     const box = $('[data-newcat]', form);
@@ -2954,6 +3593,7 @@ document.addEventListener('keydown', (e) => {
 // Called by the Android app when the phone's Back button is pressed. Returns true if FETA used it.
 window.fetaBack = () => {
   if ($('#sheet-root').firstChild) { closeSheet(); return true; }
+  if (state.settings.started && ui.page) { ui.page = null; render(); window.scrollTo(0, 0); return true; }
   if (state.settings.started && ui.tab === 'more' && ui.setup) { ui.setup = null; render(); window.scrollTo(0, 0); return true; }
   if (state.settings.started && ui.tab !== 'home') { ui.tab = 'home'; ui.bar = null; render(); window.scrollTo(0, 0); return true; }
   return false;

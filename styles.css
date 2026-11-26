@@ -241,7 +241,8 @@ html:has(#sheet-root > *), html:has(#sheet-root > *) body { overflow: hidden; }
 .welcome h3 { font-size: 15px; margin: 18px 0 8px; }
 
 /* ---------- Version 2 additions ---------- */
-.tabbar-in { grid-template-columns: repeat(6, 1fr); }
+/* --n is the number of tabs: six, or two for a guest. */
+.tabbar-in { grid-template-columns: repeat(var(--n, 6), 1fr); }
 .tab { position: relative; }
 .badge { position: absolute; top: 4px; left: calc(50% + 6px); min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--crit); color: #fff; font-size: 11px; font-style: normal; font-weight: 700; line-height: 17px; text-align: center; }
 
@@ -480,6 +481,32 @@ div.row:active { background: none; }
 .bell { position: relative; flex: none; width: 46px; height: 46px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); padding: 0; }
 .bell svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; vertical-align: middle; }
 .bell .badge { top: -3px; left: auto; right: -3px; }
+/* A person's picture, or the first letter of their name when they have none. */
+.avatar { flex: none; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; overflow: hidden; background: var(--track); color: var(--ink); font-weight: 700; font-size: 15px; }
+.avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.avatar.big { width: 64px; height: 64px; font-size: 26px; }
+.bell { overflow: visible; }
+.bell .avatar { width: 100%; height: 100%; font-size: 18px; }
+.me-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+.me-text { flex: 1; min-width: 0; }
+.me-text .row-sub { display: block; }
+.btn.small { display: inline-block; width: auto; min-height: 38px; font-size: 15px; padding: 7px 14px; border-radius: 11px; margin: 0; }
+.btn-row { display: flex; gap: 8px; margin-top: 4px; }
+/* Shown above every screen while the profile on screen is not the person's own main one. */
+.profile-bar { display: flex; align-items: center; gap: 8px; width: 100%; margin-bottom: 12px; padding: 9px 12px; text-align: left; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.profile-bar .name { flex: 1; min-width: 0; }
+.row[aria-current="true"] .name { color: var(--accent); }
+.comments { margin-top: 18px; }
+.comments .sec-head { margin-top: 0; }
+.comment { display: flex; gap: 10px; margin-bottom: 12px; }
+.comment.reply { margin-left: 44px; }
+.comment-main { flex: 1; min-width: 0; }
+.comment-head { display: flex; gap: 8px; align-items: baseline; }
+.comment-body { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; }
+.comment-acts { display: flex; gap: 14px; }
+.comment-acts .link { min-height: 30px; padding: 2px 0; font-size: 14px; }
+.comment-box { display: flex; gap: 8px; align-items: center; }
+.comment-box input { flex: 1; min-width: 0; }
 .notify-row { align-items: flex-start; }
 .notify-row:last-child { margin-bottom: 0; }
 .notify-row input { flex: none; margin-top: 2px; }
